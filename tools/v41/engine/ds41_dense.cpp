@@ -942,6 +942,9 @@ const Ds41Geometry & Ds41Dense::geom() const { return p_->g; }
 ggml_tensor * Ds41Dense::weight(const std::string & name) const { return p_->w.get(name); }
 int64_t Ds41Dense::n_layer() const { return p_->nl; }
 ggml_backend_t Ds41Dense::backend() const { return p_->backend; }
+Ds41Dense::EngramStats Ds41Dense::engram_stats() const {
+    return {p_->engram.bytes_read(), p_->engram.row_reads(), p_->engram.cache_hits(), p_->engram.cache_misses()};
+}
 const std::string & Ds41Dense::last_error() const { return p_->err; }
 
 // The NC-column tensors (see Impl::nctx): (re)created for `NC` columns, zeroed.  Every one is per-pass scratch (a pass

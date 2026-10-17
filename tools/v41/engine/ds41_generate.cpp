@@ -181,6 +181,14 @@ void print_file_pipeline(const Ds41MoeStats & st, bool enabled) {
                  (double) st.file_h2d_bytes / 1073741824.0, st.file_ready_wait_ms);
 }
 
+void print_engram(const Ds41Dense & dense, bool enabled) {
+    if (!enabled) return;
+    const auto st = dense.engram_stats();
+    std::fprintf(stderr, "engram cumulative: %llu file-read payload bytes, %llu read groups, %llu row-cache hits / %llu misses (OS cache may serve file reads)\n",
+                 (unsigned long long) st.file_bytes, (unsigned long long) st.read_groups,
+                 (unsigned long long) st.cache_hits, (unsigned long long) st.cache_misses);
+}
+
 double now_ms() {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -1680,6 +1688,7 @@ int main(int argc, char ** argv) {
             const double dec_ms = now_ms() - td0;
             const Ds41MoeStats st = tier.stats();
             print_file_pipeline(st, a.file_pipeline);
+            print_engram(dense, a.llama_q2_k);
             if (std::strcmp(finish, "error") == 0) {
                 std::fprintf(stderr, "serve: decode failed: %s\n", ferr.c_str());
                 hist.clear();
@@ -1937,6 +1946,7 @@ int main(int argc, char ** argv) {
     if (prof_decode) Ds41MoeTier::profiler(false);
     const Ds41MoeStats st = tier.stats();
     print_file_pipeline(st, a.file_pipeline);
+    print_engram(dense, a.llama_q2_k);
     std::fprintf(stderr, "decode: %d tokens in %.2f s = %.2f tok/s; experts %lld hit / %lld cpu / %lld pcie / %lld file "
                  "(%.1f%% VRAM hits), cpu %.0f ms, file %.0f ms; spec reads %lld issued / %lld used; prefetch %lld issued / "
                  "%lld outside the arena / %lld used\n",

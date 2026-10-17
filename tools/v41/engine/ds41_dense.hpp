@@ -72,6 +72,12 @@ public:
     /// Blocks present in the file (all 40 for the real model; a prefix for a partial test file).
     int64_t n_layer() const;
     ggml_backend_t backend() const;
+    struct EngramStats {
+        uint64_t file_bytes = 0, read_groups = 0, cache_hits = 0, cache_misses = 0;
+    };
+    /// Cumulative completed-pass counters. File payload can be served by the OS page cache;
+    /// this is not a physical-device byte counter. Call with no concurrent Engram batch.
+    EngramStats engram_stats() const;
 
     /// Start a pass: tokens tids[0..n) at positions pos0.., n <= max_pass.  Embeddings + Engram rows (the hash
     /// needs the 3 tokens before pos0: the history is kept by position, so a re-decoded position overwrites it).
