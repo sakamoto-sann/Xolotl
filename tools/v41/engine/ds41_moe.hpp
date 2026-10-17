@@ -304,6 +304,14 @@ struct Ds41MoeConfig {
     /// Decode: a file-tier expert that `run` had to read replaces the least-recently-used arena expert of its layer
     /// (same blob size), so the experts a conversation uses stay in RAM after their first use.  Off = static arena.
     bool arena_adapt = false;
+    /// Opt-in exponential frequency/recency history for existing RAM/VRAM victim selection.
+    /// Keeps size/class/current-route protection and existing admission filters; rejects colder incoming entries.
+    /// No trained policy is implied.
+    bool cache_freq_recency = false;
+    double cache_half_life = 64.0;   ///< routed tokens per layer; history decays by half over this interval
+    /// Opt-in SSD completion -> H2D -> compute pipeline for decode and small verify passes.
+    /// Reuses the existing eight staging slots; no model repack, new weights or extra expert buffers.
+    bool file_pipeline = false;
     /// Prompt chunks (`run_chunk`): the streamed experts' products through llama.cpp's MMQ (int8 tensor cores; the
     /// activations rounded to MMQ's q8_1) instead of the grouped MMVQ kernel, on the layers whose gate/up/down types
     /// MMQ covers and that have no SwiGLU clamp.  Needs a build with the prompt MMQ path (`strata_mmq`, with
@@ -356,6 +364,9 @@ struct Ds41MoeStats {
     int64_t cpu = 0;                ///< computed by the CPU pool
     int64_t pcie = 0;               ///< misses DMA'd to the GPU and computed there
     int64_t file_tier = 0;          ///< reads served by the blob source instead of the arena
+    int64_t file_ready_transfers = 0; ///< completion-pipelined experts (includes already-stashed experts)
+    uint64_t demand_payload_bytes = 0, file_h2d_bytes = 0; ///< logical bytes, not physical/aligned disk traffic
+    double file_ready_wait_ms = 0;   ///< host time blocked waiting for a complete expert in pipeline mode
     double gap_ms = 0, hit_ms = 0, pcie_ms = 0, cpu_ms = 0, wall_ms = 0;
     double file_ms = 0;             ///< time spent reading file-tier blobs (inside run / prefetch)
     int64_t arena_swaps = 0;        ///< arena_adapt: file-tier experts moved into the arena
