@@ -8,6 +8,7 @@
 //                 [--vram-lru] [--arena-adapt] [--pcie 0.25] [--prefill-chunk N] [--prompt-batch B] [--chunk-mmq] [--ctx N]
 //                 [--temp 0] [--seed 1] [--stop id,id] [--ppl] [--no-actquant] [--kv-fp4] [--serve] [--quiet]
 //                 [--enc-skip|--no-enc-skip] [--enc-replay N] [--dump-last F]
+//                 [--file-pipeline] [--cache-policy lru|freq-recency] [--cache-half-life 64]
 // --enc-skip (layer-major batches only; DEFAULT for one-shot runs, --no-enc-skip = full path): prompt tokens before the last --enc-replay (default 2560 = 128 * 20) stop
 // after layer 20's persistent-KV writes; only the last 2560 tokens run layers 21-39.  Same last-token logits / decode.
 //
@@ -81,6 +82,8 @@ struct Args {
     std::vector<int> stop;
     bool ppl = false, serve = false, quiet = false, vram_lru = true, arena_adapt = false, chunk_mmq = true;
     bool llama_q2_k = false;
+    bool file_pipeline = false, cache_freq_recency = false;
+    double cache_half_life = 64;
     bool act_quant = true, chunk_prefetch = true, kv_fp4 = false;
     int  enc_skip = -1;           // -1 = default (on for one-shot layer-major runs), 1 = --enc-skip, 0 = --no-enc-skip; only run the tokens before the replay window through layers 21-39
     int  enc_replay = 2560;       // --enc-replay N: the replay window (window_size * (n_layer - cand_layer) = 128*20)
@@ -118,6 +121,21 @@ bool parse(int argc, char ** argv, Args & a) {
         else if (k == "--vram-lru") a.vram_lru = true;
         else if (k == "--no-vram-lru") a.vram_lru = false;
         else if (k == "--arena-adapt") a.arena_adapt = true;
+        else if (k == "--file-pipeline") a.file_pipeline = true;
+        else if (k == "--cache-policy") {
+            const std::string value = next();
+            if (value != "lru" && value != "freq-recency") {
+                std::fprintf(stderr, "--cache-policy expects lru or freq-recency\n"); return false;
+            }
+            a.cache_freq_recency = value == "freq-recency";
+        }
+        else if (k == "--cache-half-life") {
+            const std::string value = next(); char * end = nullptr;
+            a.cache_half_life = std::strtod(value.c_str(), &end);
+            if (value.empty() || *end || !std::isfinite(a.cache_half_life) || a.cache_half_life <= 0) {
+                std::fprintf(stderr, "--cache-half-life must be finite and positive\n"); return false;
+            }
+        }
         else if (k == "--pcie") a.pcie = std::atof(next().c_str());
         else if (k == "--pf-b") a.pf_b = std::atof(next().c_str());
         else if (k == "--prefill-chunk") a.prefill_chunk = std::atoi(next().c_str());
@@ -154,6 +172,21 @@ bool parse(int argc, char ** argv, Args & a) {
         else { std::fprintf(stderr, "unknown argument %s\n", k.c_str()); return false; }
     }
     return !a.model.empty() && (a.serve || !a.ids_csv.empty() || !a.ids_file.empty() || !a.build_mirror.empty());
+}
+
+void print_file_pipeline(const Ds41MoeStats & st, bool enabled) {
+    if (!enabled) return;
+    std::fprintf(stderr, "file pipeline: %lld completed experts, demand payload %.3f GiB, H2D payload %.3f GiB, ready wait %.2f ms (logical bytes)\n",
+                 (long long) st.file_ready_transfers, (double) st.demand_payload_bytes / 1073741824.0,
+                 (double) st.file_h2d_bytes / 1073741824.0, st.file_ready_wait_ms);
+}
+
+void print_engram(const Ds41Dense & dense, bool enabled) {
+    if (!enabled) return;
+    const auto st = dense.engram_stats();
+    std::fprintf(stderr, "engram cumulative: %llu file-read payload bytes, %llu read groups, %llu row-cache hits / %llu misses (OS cache may serve file reads)\n",
+                 (unsigned long long) st.file_bytes, (unsigned long long) st.read_groups,
+                 (unsigned long long) st.cache_hits, (unsigned long long) st.cache_misses);
 }
 
 double now_ms() {
@@ -365,7 +398,7 @@ int main(int argc, char ** argv) {
     Ds41MoeTier tier;
     Ds41MoeConfig mc;
     mc.cpu_only = a.experts == "cpu" || ggml_backend_is_cpu(be);
-    mc.slots = a.slots > 0 ? a.slots : TG.n_layers * TG.n_experts;
+    mc.slots = a.slots > 0 ? a.slots : slot_gib > 0 ? TG.n_layers * TG.n_experts : 0;
     mc.slot_gib = a.slots > 0 ? 0.0 : slot_gib;
     mc.pcie_frac = a.pcie;
     mc.pf_b = a.pf_b;   // predicted prefetch (Ds41Dense::predict -> tier.prefetch), experts per layer
@@ -373,7 +406,13 @@ int main(int argc, char ** argv) {
     mc.arena_gib = a.arena_gib;
     mc.max_arena_gib = a.arena_gib;
     mc.vram_lru = a.vram_lru;
-    mc.arena_adapt = a.arena_adapt;
+    mc.arena_adapt = a.arena_adapt || a.cache_freq_recency;
+    mc.cache_freq_recency = a.cache_freq_recency;
+    mc.cache_half_life = a.cache_half_life;
+    mc.file_pipeline = a.file_pipeline;
+    if (a.cache_freq_recency || a.file_pipeline)
+        std::fprintf(stderr, "experimental expert delivery: cache=%s half-life=%.1f tokens/layer, completion-pipeline=%s (no measured speedup)\n",
+                     a.cache_freq_recency ? "frequency/recency" : "LRU", a.cache_half_life, a.file_pipeline ? "on" : "off");
     mc.chunk_mmq = a.chunk_mmq;
     mc.chunk_prefetch = a.chunk_prefetch;
     mc.chunk_prefetch_gib = a.chunk_prefetch_gib;
@@ -410,6 +449,11 @@ int main(int argc, char ** argv) {
         if (!a.rank.empty()) {
             ranked = ds41_read_ranked(a.rank, err);
             if (ranked.empty()) { std::fprintf(stderr, "ds41_generate: --rank: %s\n", err.c_str()); return 1; }
+        } else if (a.llama_q2_k) {
+            // No learned rank ships with this input: spread the bounded RAM/VRAM seed
+            // over every layer, rather than filling only the first few layers.
+            for (int64_t e = 0; e < TG.n_experts; ++e)
+                for (int64_t l = 0; l < TG.n_layers; ++l) ranked.emplace_back((int32_t) l, (int32_t) e);
         } else {
             for (int64_t l = 0; l < TG.n_layers; ++l)
                 for (int64_t e = 0; e < TG.n_experts; ++e) ranked.emplace_back((int32_t) l, (int32_t) e);
@@ -1643,6 +1687,8 @@ int main(int argc, char ** argv) {
             }
             const double dec_ms = now_ms() - td0;
             const Ds41MoeStats st = tier.stats();
+            print_file_pipeline(st, a.file_pipeline);
+            print_engram(dense, a.llama_q2_k);
             if (std::strcmp(finish, "error") == 0) {
                 std::fprintf(stderr, "serve: decode failed: %s\n", ferr.c_str());
                 hist.clear();
@@ -1899,6 +1945,8 @@ int main(int argc, char ** argv) {
     const double dec_ms = now_ms() - td0;
     if (prof_decode) Ds41MoeTier::profiler(false);
     const Ds41MoeStats st = tier.stats();
+    print_file_pipeline(st, a.file_pipeline);
+    print_engram(dense, a.llama_q2_k);
     std::fprintf(stderr, "decode: %d tokens in %.2f s = %.2f tok/s; experts %lld hit / %lld cpu / %lld pcie / %lld file "
                  "(%.1f%% VRAM hits), cpu %.0f ms, file %.0f ms; spec reads %lld issued / %lld used; prefetch %lld issued / "
                  "%lld outside the arena / %lld used\n",

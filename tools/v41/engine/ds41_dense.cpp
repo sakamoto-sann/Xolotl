@@ -316,7 +316,7 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
                 n.compare(n.size() - suf.size(), suf.size(), suf) != 0) return std::string();
             return n.substr(0, n.size() - suf.size()) + "ffn_gate_inp_pred.weight";
         };
-        size_t rq_n = 0, rq_from = 0, rq_to = 0, pq_n = 0;
+        size_t rq_n = 0, rq_from = 0, rq_to = 0, pq_n = 0, bf16_n = 0, bf16_to = 0;
         for (size_t s = 0; s < model.size(); ++s)
             for (const auto & ti : model.shard(s).tensors()) {
                 if (skip(ti.name)) continue;
@@ -363,13 +363,20 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
                     ggml_backend_tensor_set(t, src, 0, ggml_nbytes(t));
                     continue;
                 }
-                rq_to += convert_upload(t, ti, src);
-                ++rq_n;
-                rq_from += (size_t) ggml_nrows(t) * ggml_row_size((ggml_type) ti.type, t->ne[0]);
+                const size_t uploaded = convert_upload(t, ti, src);
+                if (requant(ti)) {
+                    rq_to += uploaded;
+                    ++rq_n;
+                    rq_from += (size_t) ggml_nrows(t) * ggml_row_size((ggml_type) ti.type, t->ne[0]);
+                } else {
+                    ++bf16_n; bf16_to += uploaded;
+                }
             }
         if (rq_n) std::fprintf(stderr, "dense requant: %zu Q8_0 matrices -> %s, %.2f -> %.2f GB\n", rq_n, ggml_type_name(rq),
                                rq_from / 1e9, rq_to / 1e9);
         if (pq_n) std::fprintf(stderr, "prediction routers: %zu F32 copies as %s\n", pq_n, ggml_type_name(pq));
+        if (bf16_n) std::fprintf(stderr, "1017 dense: %zu BF16 tensors expanded to F32 (%.2f MiB)\n",
+                                 bf16_n, bf16_to / 1048576.0);
     }
     size_t si = 0;
     const TensorInfo * te = model.find("token_embd.weight", &si);
@@ -935,6 +942,9 @@ const Ds41Geometry & Ds41Dense::geom() const { return p_->g; }
 ggml_tensor * Ds41Dense::weight(const std::string & name) const { return p_->w.get(name); }
 int64_t Ds41Dense::n_layer() const { return p_->nl; }
 ggml_backend_t Ds41Dense::backend() const { return p_->backend; }
+Ds41Dense::EngramStats Ds41Dense::engram_stats() const {
+    return {p_->engram.bytes_read(), p_->engram.row_reads(), p_->engram.cache_hits(), p_->engram.cache_misses()};
+}
 const std::string & Ds41Dense::last_error() const { return p_->err; }
 
 // The NC-column tensors (see Impl::nctx): (re)created for `NC` columns, zeroed.  Every one is per-pass scratch (a pass

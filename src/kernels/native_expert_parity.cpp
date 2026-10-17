@@ -47,7 +47,13 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 namespace {
 constexpr int NT = 3, E = 7;
-constexpr int64_t H = 2560, FF = 640;
+#ifndef STRATA_PARITY_H
+#define STRATA_PARITY_H 2560
+#endif
+#ifndef STRATA_PARITY_FF
+#define STRATA_PARITY_FF 640
+#endif
+constexpr int64_t H = STRATA_PARITY_H, FF = STRATA_PARITY_FF;
 
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
 int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label,

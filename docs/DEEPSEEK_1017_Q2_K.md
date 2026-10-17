@@ -1,9 +1,10 @@
-# DeepSeek 1017 Q2_K direct input (draft, unbuilt)
+# DeepSeek 1017 Q2_K direct input
 
 The opt-in `ds41_generate --llama-q2-k -m <any-shard.gguf>` source path reads the
 existing llama.cpp files directly. It does not merge files, convert model weights
 or materialize the Engram tables in RAM. The default native GSQ path remains the
-default. This implementation has **not been compiled or run with a model**.
+default. CUDA compilation and helper tests have passed; short full-model generation and measurements have passed.
+See [runtime qualification](DEEPSEEK_1017_RUNTIME.md) for current evidence and measurement limits.
 
 ## Inspected artifact
 
@@ -67,36 +68,17 @@ preflight checks split numbers/counts, duplicate names, overlap, bounds, all
 tensor shapes/types, and the pinned sizes. Without `--verify`, it explicitly
 reports that weight hashes were not checked.
 
-## Evidence and pending qualification (2026-10-17)
+## Evidence and remaining qualification (2026-10-17)
 
-Completed: inspected only the ten remote headers (about 6 MB total), matched all
-1,046 tensor names/shapes/types to the direct-input contract, checked declared
-payload bounds/overlaps against published sizes, and passed 15 tiny Python
-header/offset tests plus the existing 16 source-export tests. These are format
-checks, not evidence that C++ compiles or inference is numerically correct.
+All ten pinned model shards passed size/SHA-256 verification. Real-file Python preflight and C++ geometry checks
+passed for all 1,046 tensors. CUDA build, Q2_K row parity, actual-dimension synthetic expert checks, pipeline
+integration and short real generation passed. Arithmetic answered 42; eight 32-token code trials matched token IDs.
+See [runtime qualification](DEEPSEEK_1017_RUNTIME.md) for exact versions, speeds, RAM and test limits.
 
-Source inspection of llama.cpp converter commit
-`2076412598e99127ea2554467b2b7530856895d3` found that its V4/V4.1 mapping returns
-the named tensors without a RoPE permutation. The row decoder follows ggml's
-Q2_K layout: 16 scale/min bytes, 64 packed code bytes and two half scales.
-`test_ds41_q2_row` is prepared to compare 1,024 blocks with ggml's decoder, but
-has not been built or executed. `test_ds41_geometry <file> --llama-q2-k` is also
-prepared for a later real-file geometry check.
+The row decoder follows ggml's Q2_K layout: 16 scale/min bytes, 64 packed code bytes and two half scales.
+The llama.cpp converter at `2076412598e99127ea2554467b2b7530856895d3` maps V4/V4.1 tensors without a RoPE
+permutation. Matching-reference logits/routing, long context, broad quality and non-CUDA backends remain unqualified.
+A separate read-only self-review was performed; no independent reviewer was available with delegation disabled.
 
-Pending: compile affected backends, run the row/reference gates and native
-regressions, verify completed weight hashes, compare logits/routing with a
-matching llama.cpp reference, then assess context length, RAM/VRAM and speed on
-the target GPU. No throughput, precision or successful 1017 generation is claimed.
-Review so far is a separate read-only self-review; no independent reviewer was
-available and delegation was disabled.
-
-ComfyUI retains priority. No build, model conversion, inference or benchmark
-was started. The low-impact downloader configuration was left unchanged.
-The existing 60 GiB arena and large prompt defaults are not suitable as-is for
-a 32 GB machine. Before any later run, choose an explicit RAM/VRAM budget and
-small prompt/context, and use `--route-bias 0 --route-bias-file 0` for initial
-reference comparisons. Existing routing biases/ranks are not a 1017 quality baseline.
-
-This record separates source implementation, header evidence and pending runtime
-results so it can later support an article without turning unmeasured behavior
-into a performance claim.
+Use an explicit RAM/VRAM budget on a 32 GB machine. The 60 GiB arena defaults are unsuitable here.
+Initial comparisons use `--route-bias 0 --route-bias-file 0`; existing biased routing/ranks are not a 1017 quality baseline.
