@@ -212,7 +212,7 @@ private:
 /// cache; no mmap of the 150 GiB file).  `geom()` is the per-expert-class geometry for the tier.
 class Ds41FileBlobs : public Ds41BlobSource {
 public:
-    explicit Ds41FileBlobs(std::string gguf);
+    explicit Ds41FileBlobs(std::string gguf, bool llama_q2_k = false);
     ~Ds41FileBlobs() override;
     const char* kind() const override { return "deepseek41 gguf"; }
     bool open(std::string& err) override;
@@ -238,7 +238,7 @@ public:
                       std::string& err) const;
 
 private:
-    struct Span { uint64_t off = 0, bytes = 0; };
+    struct Span { uint64_t off = 0, bytes = 0; int fd = -1, dfd = -1; };
     void spans(int64_t l, int64_t e, Span s[3]) const;
     /// One 4096-aligned `pread` of [off, off+n) through the O_DIRECT twin fd, sliced out of `scratch`.  False when
     /// there is no twin fd or the bounce is too small (the caller then falls back to the buffered `read`).
@@ -255,6 +255,9 @@ private:
     mutable std::vector<uint8_t*> bfree_, ball_;
     bool part_direct_ = true;    ///< read_part through the O_DIRECT twin (STRATA_DECODE_DIRECT=0: buffered)
     std::string path_;
+    bool llama_q2_k_ = false;
+    std::vector<int> fds_, dfds_;   ///< one descriptor pair per split file; fd_ aliases element 0
+    std::vector<size_t> gate_file_, up_file_, down_file_;
     int fd_ = -1;
     int dfd_ = -1;               ///< O_DIRECT twin of fd_ (-1 where the filesystem refused it)
     size_t scratch_ = 0;         ///< the aligned bounce one read_direct span needs

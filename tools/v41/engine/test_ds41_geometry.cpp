@@ -16,7 +16,8 @@ int main(int argc, char ** argv) {
     };
     GgufModel m = GgufModel::open(argv[1]);
     Ds41Geometry G;
-    std::string e = ds41_read_geometry(m, G);
+    const bool llama_q2_k = argc > 2 && std::string(argv[2]) == "--llama-q2-k";
+    std::string e = ds41_read_geometry(m, G, llama_q2_k);
     check("geometry", e.empty(), e);
     if (!e.empty()) return 1;
     std::printf("D %lld layers %lld heads %lld d_head %lld rope %lld q_lora %lld o %lldx%lld swa %lld experts %lld/%lld ff %lld "

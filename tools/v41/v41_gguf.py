@@ -51,6 +51,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import v41_formats as F  # noqa: E402
 import v41_gguf_meta as MD  # noqa: E402
+import v41_checkpoint as CP  # noqa: E402
 
 MAIN = "/media/Crucial1TB/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8"
 DIRS = [MAIN, "/media/mal/Crucible/models/DeepSeek-V4.1-Flash-UNCENSORED-FP8",
@@ -74,15 +75,18 @@ def log(*a):
 class Source:
     """The HF checkpoint: header lookups and pread()s by tensor name, FP8 / FP4 dequantization."""
 
-    def __init__(self, dirs=DIRS):
-        self.dirs = dirs
-        self.wm = json.load(open(os.path.join(dirs[0], "model.safetensors.index.json")))["weight_map"]
+    def __init__(self, dirs=None, checkpoint=None):
+        self.checkpoint = checkpoint
+        self.dirs = checkpoint.dirs if checkpoint else (DIRS if dirs is None else dirs)
+        with open(os.path.join(self.dirs[0], "model.safetensors.index.json")) as fp:
+            self.wm = json.load(fp)["weight_map"]
         self.hdr, self.fds = {}, {}
         self._fp8 = None
 
     def _shard(self, shard):
         if shard not in self.hdr:
-            path = next((os.path.join(d, shard) for d in self.dirs if os.path.exists(os.path.join(d, shard) + ".ok")), None)
+            path = (self.checkpoint.verified_path(shard) if self.checkpoint else
+                    next((os.path.join(d, shard) for d in self.dirs if os.path.exists(os.path.join(d, shard) + ".ok")), None))
             if path is None:
                 raise FileNotFoundError(f"shard {shard} is not verified (.ok) in any source dir")
             with open(path, "rb") as f:
@@ -396,8 +400,8 @@ def experts_json(path, hdr_len, plan):
 _W = {}
 
 
-def _worker_init(provider):
-    _W["p"], _W["src"] = provider, Source()
+def _worker_init(provider, dirs=None, checkpoint=None):
+    _W["p"], _W["src"] = provider, Source(dirs=dirs, checkpoint=checkpoint)
 
 
 def _worker_get(args):
@@ -469,13 +473,17 @@ def split_records(no, n_tensors_total):
 
 def write_shard(path, tensors, records, src, provider, threads, ident):
     hdr = header(tensors, records)
+    if src.checkpoint:
+        ident += f"|{src.checkpoint.repo}@{src.checkpoint.revision}"
     sig = hashlib.sha256(hdr + ident.encode()).hexdigest()
     partial, journal = path + ".partial", path + ".partial.json"
     if os.path.exists(path):
         raise ValueError(f"refusing to overwrite {path}")
     done = 0
-    if os.path.exists(journal):
-        j = json.load(open(journal))
+    has_journal = os.path.exists(journal)
+    if has_journal:
+        with open(journal) as fp:
+            j = json.load(fp)
         if j["signature"] != sig:
             raise ValueError(f"{journal}: a different plan/source wrote this partial file; delete it to restart")
         done = j["completed"]
@@ -485,14 +493,22 @@ def write_shard(path, tensors, records, src, provider, threads, ident):
     free = shutil.disk_usage(os.path.dirname(os.path.abspath(path))).free
     if free < total - end + (8 << 30):
         raise ValueError(f"{path}: needs {(total - end) / 2**30:.1f} GiB + 8 GiB reserve, {free / 2**30:.1f} GiB free")
-    mode = "r+b" if done else "wb"
+    resume_zero = src.checkpoint is not None and has_journal
+    if resume_zero and not os.path.exists(partial):
+        raise ValueError(f"{journal}: partial file missing; use a new output path")
+    mode = "r+b" if done or resume_zero else "wb"
     if not done and os.path.exists(partial):
-        os.unlink(partial)
+        if src.checkpoint:
+            if not has_journal:
+                raise ValueError(f"{partial}: unqualified partial file retained; use a new output path")
+        else:
+            os.unlink(partial)
     pool = None
     with open(partial, mode) as fp:
         if not done:
             fp.write(hdr)
-            json.dump({"signature": sig, "completed": 0}, open(journal, "w"))
+            with open(journal, "w") as jf:
+                json.dump({"signature": sig, "completed": 0}, jf)
         fp.truncate(end)
         fp.seek(end)
         try:
@@ -513,7 +529,8 @@ def write_shard(path, tensors, records, src, provider, threads, ident):
                     jobs = [(t.layer, e, t.role) for e in t.experts]
                     if isinstance(provider, ExpertRTN) and threads > 1:
                         if pool is None:
-                            pool = cf.ProcessPoolExecutor(threads, initializer=_worker_init, initargs=(provider,))
+                            pool = cf.ProcessPoolExecutor(threads, initializer=_worker_init,
+                                                          initargs=(provider, src.dirs, src.checkpoint))
                         parts = pool.map(_worker_get, jobs, chunksize=4)
                     else:
                         parts = (provider.get(L, e, r, src) for L, e, r in jobs)
@@ -585,6 +602,8 @@ def read_gguf(path):
 
 def verify(p1, src, provider, cfg, layers, sample=3):
     kv, ts, start = read_gguf(p1)
+    if src.checkpoint and kv.get("strata.v41.source_revision") != src.checkpoint.revision:
+        raise ValueError("GGUF is not tagged with the selected checkpoint revision")
     p2 = p1.replace("-00001-of-00002", "-00002-of-00002")
     have = {n: (s, t, o, start, p1) for n, s, t, o in ts}
     if p2 != p1 and os.path.exists(p2):
@@ -657,9 +676,14 @@ def main():
     ap.add_argument("--engram-dir")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--dry-run", action="store_true")
+    CP.add_arguments(ap)
     a = ap.parse_args()
-    src = Source()
-    cfg = json.load(open(os.path.join(MAIN, "config.json")))
+    checkpoint = CP.from_arguments(a)
+    if checkpoint and (a.experts or a.rtn_map or a.experts_in_place):
+        ap.error("pinned source currently supports --rtn only; calibrated expert provenance is not qualified")
+    src = Source(checkpoint=checkpoint)
+    main_dir = str(checkpoint.root) if checkpoint else MAIN
+    cfg = json.load(open(os.path.join(main_dir, "config.json")))
     c = cfg["text_config"]
     layers = parse_layers(a.layers, c["num_hidden_layers"])
     if a.experts:
@@ -681,7 +705,11 @@ def main():
         rest = set(src.wm) - claimed - omitted
         if rest:
             raise ValueError(f"unclaimed source tensors: {sorted(rest)[:10]}")
-    _, records = MD.metadata(MAIN, NAME, URL)
+    _, records = MD.metadata(main_dir, checkpoint.name if checkpoint else NAME,
+                             checkpoint.url if checkpoint else URL)
+    if checkpoint:
+        records += [MD.kv_string("strata.v41.source_repo", checkpoint.repo),
+                    MD.kv_string("strata.v41.source_revision", checkpoint.revision)]
     counts = {}
     for t in plan:
         if t.kind == "experts" and t.role != "up":

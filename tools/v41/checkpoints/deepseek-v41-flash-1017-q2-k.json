@@ -1,0 +1,108 @@
+{
+  "repo": "mrfakename/DeepSeek-V4.1-Flash-1017-GGUF",
+  "revision": "2c97dba3934f27a99767a90830e7519cc7b8b2d9",
+  "metadata": {
+    "general.architecture": "deepseek41",
+    "deepseek41.block_count": 40,
+    "deepseek41.embedding_length": 5120,
+    "deepseek41.expert_count": 384,
+    "deepseek41.expert_used_count": 6,
+    "deepseek41.expert_feed_forward_length": 2304,
+    "deepseek41.engram.head_count": 8,
+    "deepseek41.engram.key_length": 256,
+    "deepseek41.engram.max_ngram_size": 4,
+    "deepseek41.engram.pad_id": 2,
+    "deepseek41.engram.layer_ids": [
+      1,
+      14
+    ],
+    "deepseek41.attention.compress_ratios": [
+      0,
+      0,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      0,
+      0
+    ],
+    "split.tensors.count": 1046
+  },
+  "shards": {
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00001-of-00010.gguf": {
+      "size": 29520562752,
+      "sha256": "588c1ea87e710ee3295da47e3bd324d1c8eb2a3ac01c1f2c4b88a513ef45ab2c"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00002-of-00010.gguf": {
+      "size": 29514794400,
+      "sha256": "4e3617fd2d180466d34de5b12cfc76033313070295040c7bed7ce7711bfd08f2"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00003-of-00010.gguf": {
+      "size": 29514794432,
+      "sha256": "adfd980162017948aa00d4709476f339183f140548197e87868353c5915ed72b"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00004-of-00010.gguf": {
+      "size": 29514794432,
+      "sha256": "7c4cd3c0f87c739e81a177c7bab96ec84995f43c05e936b0f88e9ed1fc2bfc53"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00005-of-00010.gguf": {
+      "size": 29514794432,
+      "sha256": "5a99539a1d60fae089a3404f2b1f2972b7cfe3a09a431c20baffa06b451cca3f"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00006-of-00010.gguf": {
+      "size": 29514794432,
+      "sha256": "fefc9d72435ec610c909ebaa1173086b6b86df7ccf5b7d3598b180e1447345d3"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00007-of-00010.gguf": {
+      "size": 19676529664,
+      "sha256": "54c8c2da27231aa9f0146a953e20152cd33b49ef266a7884984485e10452c4f7"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00008-of-00010.gguf": {
+      "size": 32256518304,
+      "sha256": "e61eed64f68ffa270a951c9f39b0f291449b4864717f845b50087cad55ab9b8c"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00009-of-00010.gguf": {
+      "size": 32257401504,
+      "sha256": "52abe6197a0d9ef11af621f98674f9544d385fa54d274cfc3e679c590c28f8e5"
+    },
+    "DeepSeek-V4.1-Flash-1017-Q2_K-00010-of-00010.gguf": {
+      "size": 3230432448,
+      "sha256": "cd86d49c5d54c37bb39eae39b39f43168609645edd6dacd65acee6f117c21656"
+    }
+  }
+}

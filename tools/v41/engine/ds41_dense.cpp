@@ -201,6 +201,7 @@ struct Ds41Dense::Impl {
     std::vector<std::array<int64_t, 3>> span_cap;   // [sub-batch][ratio] pass_cap
     std::vector<float> host_fn, host_wts, host_logits, host_emb;
     std::vector<int32_t> host_ids;
+    int embd_type = GGML_TYPE_F16;
     const uint8_t * embd = nullptr;       // token_embd F16 rows on the mmap
     std::vector<std::vector<float>> eng_rows;
     // The pass's Engram reads, started (async) by upload_inputs and waited at the first Engram layer's span /
@@ -252,12 +253,13 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
     auto make = [&](const TensorInfo & ti, int type = -1) {   // type: the in-memory type (default the file's)
         int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
         for (size_t d = 0; d < ti.shape.size() && d < GGML_MAX_DIMS; ++d) ne[d] = (int64_t) ti.shape[d];
+        if (im.g.llama_q2_k && ti.type == ty::BF16) type = GGML_TYPE_F32;
         ggml_tensor * t = ggml_new_tensor(w.ctx, (ggml_type) (type >= 0 ? type : (int) ti.type), (int) ti.shape.size(), ne);
-        ggml_set_name(t, ti.name.c_str());
+        ggml_set_name(t, (im.g.llama_q2_k ? ds41_native_name(ti.name) : ti.name).c_str());
         return t;
     };
     // routed experts never reach ggml (PTQ1_0 = 143 is past GGML_TYPE_COUNT); the I32 maps are read by the geometry
-    auto skip = [&](const std::string & n) { return is_routed(n) || n == "token_embd.weight"; };
+    auto skip = [&](const std::string & n) { return is_routed(n) || n == "token_embd.weight" || (im.g.llama_q2_k && ds41_llama_table(n)); };
     if (im.cpu) {
         for (size_t s = 0; s < model.size(); ++s) {
             const GgufFile & sh = model.shard(s);
@@ -269,11 +271,21 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
             for (const auto & ti : ts) {
                 if (skip(ti.name)) continue;
                 ggml_tensor * t = make(ti);
-                if (ggml_backend_tensor_alloc(buf, t, const_cast<uint8_t *>(sh.tensor_data(ti))) != GGML_STATUS_SUCCESS) {
+                if ((int) t->type != (int) ti.type) {
+                    auto converted = ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), ggml_nbytes(t));
+                    if (!converted || ggml_backend_tensor_alloc(converted, t, ggml_backend_buffer_get_base(converted)) != GGML_STATUS_SUCCESS) {
+                        if (converted) ggml_backend_buffer_free(converted);
+                        err = "cannot convert " + ti.name; return false;
+                    }
+                    w.bufs.push_back(converted);
+                    std::vector<float> values((size_t) ggml_nelements(t));
+                    ggml_get_type_traits((ggml_type) ti.type)->to_float(sh.tensor_data(ti), values.data(), ggml_nelements(t));
+                    ggml_backend_tensor_set(t, values.data(), 0, values.size() * sizeof(float));
+                } else if (ggml_backend_tensor_alloc(buf, t, const_cast<uint8_t *>(sh.tensor_data(ti))) != GGML_STATUS_SUCCESS) {
                     err = "cannot bind " + ti.name;
                     return false;
                 }
-                w.t[ti.name] = t;
+                w.t[im.g.llama_q2_k ? ds41_native_name(ti.name) : ti.name] = t;
             }
         }
     } else {
@@ -308,7 +320,7 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
         for (size_t s = 0; s < model.size(); ++s)
             for (const auto & ti : model.shard(s).tensors()) {
                 if (skip(ti.name)) continue;
-                w.t[ti.name] = make(ti, requant(ti) ? (int) rq : -1);
+                w.t[im.g.llama_q2_k ? ds41_native_name(ti.name) : ti.name] = make(ti, requant(ti) ? (int) rq : -1);
                 if (const std::string pn = pred_name(ti); !pn.empty()) {
                     ggml_tensor * tp = make(ti, (int) pq);
                     ggml_set_name(tp, pn.c_str());
@@ -341,7 +353,7 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
         for (size_t s = 0; s < model.size(); ++s)
             for (const auto & ti : model.shard(s).tensors()) {
                 if (skip(ti.name)) continue;
-                ggml_tensor * t = w.t[ti.name];
+                ggml_tensor * t = w.t[im.g.llama_q2_k ? ds41_native_name(ti.name) : ti.name];
                 const uint8_t * src = model.shard(s).tensor_data(ti);
                 if (const std::string pn = pred_name(ti); !pn.empty()) {
                     convert_upload(w.t[pn], ti, src);
@@ -362,6 +374,7 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
     size_t si = 0;
     const TensorInfo * te = model.find("token_embd.weight", &si);
     im.embd = model.shard(si).tensor_data(*te);
+    im.embd_type = (int) te->type;
     return true;
 }
 
@@ -1015,7 +1028,7 @@ bool Ds41Dense::init(const std::string & path, const Ds41DenseConfig & cfg, std:
         err = e.what();
         return false;
     }
-    if (!(err = ds41_read_geometry(*im.model, im.g)).empty()) return false;
+    if (!(err = ds41_read_geometry(*im.model, im.g, cfg.llama_q2_k)).empty()) return false;
     im.layers = ds41_file_layers(*im.model, im.g);
     if (!(err = ds41_check_tensors(*im.model, im.g, im.layers)).empty()) return false;
     for (size_t i = 0; i < im.layers.size(); ++i)
@@ -1048,7 +1061,10 @@ bool Ds41Dense::init(const std::string & path, const Ds41DenseConfig & cfg, std:
     }
     im.cpu = ggml_backend_is_cpu(im.backend);
     if (!load_weights(im, err)) return false;
-    if (!cfg.engram_dirs.empty() && !im.engram.open(G, cfg.engram_dirs, cfg.engram_threads, err)) return false;
+    if (cfg.llama_q2_k) {
+        if (!cfg.engram_dirs.empty()) { err = "--llama-q2-k uses embedded Engram; external --engram is not allowed"; return false; }
+        if (!im.engram.open_gguf(G, *im.model, cfg.engram_threads, err)) return false;
+    } else if (!cfg.engram_dirs.empty() && !im.engram.open(G, cfg.engram_dirs, cfg.engram_threads, err)) return false;
 
     // layers
     im.ly.resize((size_t) im.nl);
@@ -1197,8 +1213,14 @@ bool Ds41Dense::Impl::upload_inputs(const int * tids, int n, int pos0) {
     im.host_emb.resize((size_t) (D * n));
     for (int t = 0; t < n; ++t) {
         if (tids[t] < 0 || tids[t] >= im.g.vocab) { im.err = "token id out of range"; return false; }
-        const uint16_t * row = reinterpret_cast<const uint16_t *>(im.embd) + (size_t) tids[t] * (size_t) D;
-        for (int64_t i = 0; i < D; ++i) im.host_emb[(size_t) (t * D + i)] = ggml_fp16_to_fp32(row[i]);
+        if (im.g.llama_q2_k) {
+            const auto type = (ggml_type) im.embd_type;
+            const uint8_t * row = im.embd + (size_t) tids[t] * ggml_row_size(type, D);
+            ggml_get_type_traits(type)->to_float(row, im.host_emb.data() + (size_t) t * (size_t) D, D);
+        } else {
+            const uint16_t * row = reinterpret_cast<const uint16_t *>(im.embd) + (size_t) tids[t] * (size_t) D;
+            for (int64_t i = 0; i < D; ++i) im.host_emb[(size_t) (t * D + i)] = ggml_fp16_to_fp32(row[i]);
+        }
     }
     ggml_backend_tensor_set(im.i_emb, im.host_emb.data(), 0, im.host_emb.size() * 4);
     std::vector<int32_t> pos(n);
