@@ -32,6 +32,7 @@ public:
     ~Ds41Engram();
     /// dirs: where the shards are (the index json is looked up in each, the shard files too).
     bool open(const Ds41Geometry & g, const std::vector<std::string> & dirs, int threads, std::string & err);
+    bool open_gguf(const Ds41Geometry & g, const GgufModel & model, int threads, std::string & err);
     bool enabled() const { return !tables_.empty(); }
     int64_t n_cols() const { return cols_; }                    ///< hash columns per token per layer (24)
     int64_t row_dim() const { return dim_; }                    ///< 256
@@ -61,6 +62,11 @@ public:
     uint64_t cache_misses() const { return cache_miss_; }
 
 private:
+    void init_geometry(const Ds41Geometry & g);
+    void init_pool(int threads);
+    void decode_row(const uint8_t * w, const uint8_t * scales, float * out) const;
+    bool gguf_q2_ = false;
+    int64_t weight_row_ = 0, scale_row_ = 0;
     struct Table { int fd_w = -1, fd_s = -1; uint64_t off_w = 0, off_s = 0; int64_t rows = 0;
                    std::shared_ptr<RawMap> rm_w, rm_s; };
     struct ReadGroup;               // one coalesced pread (defined in the .cpp)

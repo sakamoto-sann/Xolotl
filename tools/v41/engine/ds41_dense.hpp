@@ -41,6 +41,7 @@ struct Ds41DenseConfig {
     bool    skip_routed_experts = true; ///< do not load the routed experts (the tier owns them)
     /// Directories holding the HF shards with the Engram tables (model.safetensors.index.json in the first).
     /// Empty = no Engram (its add is skipped: a debugging mode, the model is then not the model).
+    bool llama_q2_k = false;   ///< opt-in pinned llama.cpp input; embedded SSD Engram
     std::vector<std::string> engram_dirs;
     int     engram_threads = 32;        ///< parallel row reads (the disk's queue depth; cold peaks at 32-64)
     /// KV caches (window ring, compressed rows, indexer keys) element type: GGML_TYPE_F32 / BF16, or -1 = auto: BF16

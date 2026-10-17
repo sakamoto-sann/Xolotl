@@ -80,6 +80,7 @@ struct Args {
     uint64_t seed = 1;
     std::vector<int> stop;
     bool ppl = false, serve = false, quiet = false, vram_lru = true, arena_adapt = false, chunk_mmq = true;
+    bool llama_q2_k = false;
     bool act_quant = true, chunk_prefetch = true, kv_fp4 = false;
     int  enc_skip = -1;           // -1 = default (on for one-shot layer-major runs), 1 = --enc-skip, 0 = --no-enc-skip; only run the tokens before the replay window through layers 21-39
     int  enc_replay = 2560;       // --enc-replay N: the replay window (window_size * (n_layer - cand_layer) = 128*20)
@@ -100,6 +101,7 @@ bool parse(int argc, char ** argv, Args & a) {
         const std::string k = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : std::string(); };
         if (k == "-m" || k == "--model") a.model = next();
+        else if (k == "--llama-q2-k") a.llama_q2_k = true;
         else if (k == "--ids") a.ids_csv = next();
         else if (k == "--ids-file") a.ids_file = next();
         else if (k == "-n" || k == "--n-predict") a.n_predict = std::atoi(next().c_str());
@@ -245,16 +247,23 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "usage: see tools/v41/engine/ds41_generate.cpp\n");
         return 2;
     }
+    if (a.llama_q2_k && (!a.engram.empty() || std::getenv("STRATA_DSPARK") || std::getenv("STRATA_SERVE_DSPARK"))) {
+        std::fprintf(stderr, "--llama-q2-k uses embedded Engram; external Engram and unqualified DSpark are refused\n");
+        return 2;
+    }
+    if (a.llama_q2_k && (!a.build_mirror.empty() || std::getenv("STRATA_BLOB_MIRROR"))) {
+        std::fprintf(stderr, "blob mirrors are not qualified for --llama-q2-k\n"); return 2;
+    }
     if (!a.build_mirror.empty()) {   // the second-drive blob mirror (STRATA_BLOB_MIRROR): coldest experts first
         std::string err;
         if (a.mirror_gib < 0) {   // --check-mirror F: open it with every blob compared against the model file
             setenv("STRATA_BLOB_MIRROR", a.build_mirror.c_str(), 1);
             setenv("STRATA_BLOB_MIRROR_CHECK", "0", 1);
-            Ds41FileBlobs chk(a.model);
+            Ds41FileBlobs chk(a.model, a.llama_q2_k);
             if (!chk.open(err)) { std::fprintf(stderr, "ds41_generate: experts: %s\n", err.c_str()); return 1; }
             return chk.mirrored() > 0 ? 0 : 1;
         }
-        Ds41FileBlobs src(a.model);
+        Ds41FileBlobs src(a.model, a.llama_q2_k);
         if (!src.open(err)) { std::fprintf(stderr, "ds41_generate: experts: %s\n", err.c_str()); return 1; }
         if (a.rank.empty()) { std::fprintf(stderr, "ds41_generate: --build-mirror needs --rank\n"); return 2; }
         std::vector<std::pair<int32_t, int32_t>> order = ds41_read_ranked(a.rank, err);
@@ -314,6 +323,7 @@ int main(int argc, char ** argv) {
     }
     if (enc_skip && PB <= 1) { std::fprintf(stderr, "ds41_generate: --enc-skip needs the layer-major prompt path (--prompt-batch >= 2)\n"); return 2; }
     int64_t ER = enc_skip ? (int64_t) a.enc_replay : 0;
+    dc.llama_q2_k = a.llama_q2_k;
     dc.engram_dirs = a.engram;
     dc.act_quant = a.act_quant;
     // --kv-fp4 / STRATA_KV_FP4=1: the compressed KV + indexer keys packed to their exact FP4 grids (Ds41DenseConfig::kv_fp4)
@@ -338,10 +348,10 @@ int main(int argc, char ** argv) {
         ER = reach;
     }
     if (enc_skip) std::fprintf(stderr, "enc-skip: cut at layer %d (last kv source), replay window %lld (reach %lld)\n", CL, (long long) ER, (long long) reach);
-    if (a.engram.empty()) std::fprintf(stderr, "WARNING: no --engram dirs: the Engram add is skipped (not the real model)\n");
+    if (a.engram.empty() && !a.llama_q2_k) std::fprintf(stderr, "WARNING: no --engram dirs: the Engram add is skipped (not the real model)\n");
 
     // ---- routed experts
-    Ds41FileBlobs src(a.model);
+    Ds41FileBlobs src(a.model, a.llama_q2_k);
     if (!src.open(err)) { std::fprintf(stderr, "ds41_generate: experts: %s\n", err.c_str()); return 1; }
     const Ds41MoeGeom & TG = src.geom();
     double slot_gib = 0;

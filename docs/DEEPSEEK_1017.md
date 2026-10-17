@@ -1,7 +1,7 @@
 # DeepSeek V4.1 Flash 1017 source export
 
-This opt-in path exports the official 1017 checkpoint into Xolotl's native format.
-It does not add support for loading llama.cpp Q2_K split files directly. Runtime
+This document covers the opt-in official 1017 checkpoint export into Xolotl's native format.
+The separate [Q2_K direct-input path](DEEPSEEK_1017_Q2_K.md) reads llama.cpp split files. Runtime
 compatibility and performance remain unqualified until the exported files are
 built and tested on the target machine. No 1017 inference result is claimed.
 

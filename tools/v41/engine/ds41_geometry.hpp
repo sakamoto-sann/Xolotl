@@ -26,7 +26,7 @@
 namespace strata::v41 {
 
 namespace ty {
-constexpr uint32_t F32 = 0, F16 = 1, Q8_0 = 8, Q3_K = 11, I8 = 24, I32 = 26, Q2_0 = 42, PTQ1_0 = 143;
+constexpr uint32_t F32 = 0, F16 = 1, Q8_0 = 8, Q2_K = 10, Q3_K = 11, Q6_K = 14, BF16 = 30, I8 = 24, I32 = 26, Q2_0 = 42, PTQ1_0 = 143;
 }
 
 /// One layer's routed experts: the type of each expert's gate+up and of its down, and where each expert's rows are
@@ -38,6 +38,7 @@ struct Ds41ExpertMap {
 };
 
 struct Ds41Geometry {
+    bool llama_q2_k = false;   ///< explicit 1017 llama.cpp Q2_K input contract
     int64_t n_embd = 0, n_layer = 0, n_head = 0, d_head = 0, d_rope = 0, r_q = 0, o_lora = 0, o_groups = 0;
     int64_t n_swa = 0, n_expert = 0, n_used = 0, n_ff = 0, n_shared = 0;
     double weights_scale = 0;
@@ -211,7 +212,10 @@ inline std::string json_num(const std::string & js, const std::string & key, dou
 }
 }  // namespace detail
 
-inline std::string ds41_read_geometry(const GgufModel & model, Ds41Geometry & G) {
+#include "ds41_llama_geometry.inc"
+
+inline std::string ds41_read_geometry(const GgufModel & model, Ds41Geometry & G, bool llama_q2_k = false) {
+    if (llama_q2_k) return ds41_read_llama_geometry(model, G);
     const GgufFile & g = model.meta();
     const MetaValue * arch = g.get("general.architecture");
     if (!arch || arch->s != "deepseek41") return "not a deepseek41 GGUF";
@@ -297,7 +301,20 @@ inline std::string ds41_read_geometry(const GgufModel & model, Ds41Geometry & G)
 inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, const std::vector<int64_t> & layers) {
     std::map<std::string, std::pair<std::vector<uint64_t>, uint32_t>> want;   // name -> (shape GGUF order, type; ~0 = any)
     const uint32_t ANY = ~0u;
-    auto add = [&](const std::string & n, std::vector<uint64_t> sh, uint32_t t) { want[n] = { std::move(sh), t }; };
+    auto add = [&](const std::string & n, std::vector<uint64_t> sh, uint32_t t) {
+        std::string name = n;
+        if (G.llama_q2_k) {
+            name = ds41_llama_name(n);
+            // The inspected Q2_K artifact quantizes every dense matrix except routers and Engram norms.
+            if (n == "output.weight") t = ty::Q6_K;
+            else if (n.find("ffn_gate_inp.weight") != std::string::npos ||
+                     n.find("engram_q_norm.weight") != std::string::npos ||
+                     n.find("engram_k_norm.weight") != std::string::npos) t = ty::BF16;
+            else if (n.find("ffn_down_shexp.weight") != std::string::npos) t = ty::Q3_K;
+            else if (t == ty::F16 || t == ty::Q8_0) t = ty::Q2_K;
+        }
+        want[name] = { std::move(sh), t };
+    };
     const uint64_t D = (uint64_t) G.n_embd, HC = (uint64_t) G.hc, MIX = (uint64_t) G.hc_mix();
     const uint64_t DH = (uint64_t) G.d_head, NH = (uint64_t) G.n_head, RQ = (uint64_t) G.r_q;
     const uint64_t OG = (uint64_t) G.o_groups, OL = (uint64_t) G.o_lora, NE = (uint64_t) G.n_expert, FF = (uint64_t) G.n_ff;
@@ -340,6 +357,8 @@ inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, con
         add(b + "ffn_up_shexp.weight", { D, FF }, ty::Q8_0);
         add(b + "ffn_down_shexp.weight", { FF, D }, ty::Q8_0);
         if (G.engram_slot(l) >= 0) {
+            if (G.llama_q2_k) add(b + "engram_embd.weight", { (uint64_t) G.engram_dim,
+                (uint64_t) G.engram_rows[(size_t) G.engram_slot(l)] }, ty::Q2_K);
             add(b + "engram_q_norm.weight", { D, HC }, ty::F32);
             add(b + "engram_k_norm.weight", { D, HC }, ty::F32);
             add(b + "engram_kv.weight", { (uint64_t) ((G.engram_ngram - 1) * G.engram_heads * G.engram_dim), (HC + 1) * D }, ty::F16);
@@ -354,9 +373,12 @@ inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, con
             const char * roles[2] = { k ? "down" : "gate", k ? nullptr : "up" };
             size_t si = 0;
             const TensorInfo * tm = m.find(mapn, &si);
+            if (G.llama_q2_k && tm) return "llama Q2_K requires uniform stacked expert roles";
             if (!tm) {   // uniform: one stacked tensor per role
                 const TensorInfo * t0 = m.find(b + "ffn_" + roles[0] + "_exps.weight");
                 if (!t0) return "missing " + b + "ffn_" + roles[0] + "_exps.weight (and no " + mapn + ")";
+                if (G.llama_q2_k && t0->type != (k ? ty::Q3_K : ty::Q2_K))
+                    return "unsupported llama Q2_K routed expert type";
                 for (uint64_t e = 0; e < NE; ++e) { tv[e] = (int) t0->type; sv[e] = (int) e; }
                 for (const char * r : roles) {
                     if (!r) continue;
