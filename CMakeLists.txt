@@ -1295,7 +1295,8 @@ endif()
 if(STRATA_NATIVE_EXPERTS)
   enable_language(C)
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-  set(GGML_STATIC ON CACHE BOOL "" FORCE)
+  option(STRATA_GGML_STATIC_DEPS "Link ggml's third-party dependencies statically (disable for shared-only CUDA installations)" ON)
+  set(GGML_STATIC ${STRATA_GGML_STATIC_DEPS} CACHE BOOL "" FORCE)
   set(GGML_CUDA OFF CACHE BOOL "" FORCE)
   # xolotl: tools/ds4/cmake/ggml_cuda.cmake is the fork's canonical form of this block (option STRATA_GGML_CUDA,
   # GGML_CUDA ON + GGML_CUDA_GRAPHS ON under it).  GLM's inline copy of the same block is a duplicate - dropped.
