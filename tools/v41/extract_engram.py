@@ -14,6 +14,7 @@ Checks free space first, streams with 64 MiB buffers, verifies every tensor's si
 rows against the source.  Safe to re-run: writes DST_DIR/engram.safetensors.partial and renames when complete.
 """
 import json, os, random, struct, sys, time
+import v41_checkpoint as CP
 
 def st_header(path):
     with open(path, 'rb') as f:
@@ -24,28 +25,45 @@ def st_header(path):
 def main():
     argv = sys.argv[1:]
     verify, routes, args = 2000, {}, []
+    checkpoint_dir, shard_dirs = None, []
     i = 0
     while i < len(argv):
         a = argv[i]
         if a.startswith('--verify='): verify = int(a.split('=', 1)[1])
         elif a == '--to': k, v = argv[i + 1].split('=', 1); routes[k] = v; i += 1
+        elif a == '--checkpoint': checkpoint_dir = argv[i + 1]; i += 1
+        elif a == '--shard-dir': shard_dirs.append(argv[i + 1]); i += 1
         else: args.append(a)
         i += 1
+    if shard_dirs and not checkpoint_dir:
+        sys.exit('--shard-dir requires --checkpoint')
+    checkpoint = CP.Checkpoint(checkpoint_dir, shard_dirs) if checkpoint_dir else None
     if routes:
-        if len(args) < 1: print(__doc__); sys.exit(2)
-        srcs = args
+        if checkpoint:
+            if args: sys.exit('with --checkpoint and --to, do not supply positional source directories')
+            srcs = checkpoint.dirs
+        else:
+            if len(args) < 1: print(__doc__); sys.exit(2)
+            srcs = args
     else:
-        if len(args) < 2: print(__doc__); sys.exit(2)
-        srcs = args[:-1]
+        if checkpoint:
+            if len(args) != 1: sys.exit('with --checkpoint, supply one output directory')
+            srcs = checkpoint.dirs
+        else:
+            if len(args) < 2: print(__doc__); sys.exit(2)
+            srcs = args[:-1]
     index = None
     for d in srcs:
         p = os.path.join(d, 'model.safetensors.index.json')
         if os.path.exists(p):
-            index = json.load(open(p))['weight_map']; break
+            with open(p) as fp:
+                index = json.load(fp)['weight_map']
+            break
     if index is None: sys.exit('no model.safetensors.index.json in ' + ' '.join(srcs))
     names = sorted(k for k in index if '.engram.embed.' in k)
     if not names: sys.exit('no engram.embed tensors in the index')
     def find(fn):
+        if checkpoint: return checkpoint.verified_path(fn)
         for d in srcs:
             if os.path.exists(os.path.join(d, fn)): return os.path.join(d, fn)
         sys.exit('shard not found: ' + fn)
@@ -65,10 +83,20 @@ def main():
     else:
         groups = {(args[-1], 'engram.safetensors'): plan}
     filemap = {p[0]: fn for (d, fn), ps in groups.items() for p in ps}
+    if checkpoint:
+        for dst, fn in groups:
+            for path in (os.path.join(dst, fn), os.path.join(dst, fn) + '.partial',
+                         os.path.join(dst, 'model.safetensors.index.json')):
+                if os.path.exists(path):
+                    raise ValueError(f'{path}: existing output retained; use a new output directory')
     for (dst, fn), ps in groups.items():
         write_one(dst, fn, ps, verify)
     for d in sorted({d for d, _ in groups}):
-        json.dump({'metadata': {'total_size': sum(p[3] for p in plan)}, 'weight_map': filemap},
+        result = {'metadata': {'total_size': sum(p[3] for p in plan)}, 'weight_map': filemap}
+        if checkpoint:
+            result['xolotl_source_repo'] = checkpoint.repo
+            result['xolotl_source_revision'] = checkpoint.revision
+        json.dump(result,
                   open(os.path.join(d, 'model.safetensors.index.json'), 'w'), indent=1)
     print('use: --engram "' + ':'.join(sorted({d for d, _ in groups})) + '"')
 

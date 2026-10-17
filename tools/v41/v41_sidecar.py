@@ -26,6 +26,7 @@ import gguf  # noqa: E402
 from gguf import quants  # noqa: E402
 
 from v41_gguf import MAIN, Source  # noqa: E402
+import v41_checkpoint as CP  # noqa: E402
 
 Q8 = gguf.GGMLQuantizationType.Q8_0
 MX = gguf.GGMLQuantizationType.MXFP4
@@ -106,13 +107,20 @@ def tensor_data(src, name, kind, pay):
 
 
 def write(args):
-    src = Source()
-    cfg = json.load(open(os.path.join(MAIN, "config.json")))
+    checkpoint = getattr(args, "checkpoint_source", None)
+    if checkpoint and (os.path.exists(args.out) or os.path.exists(args.out + ".tmp")):
+        raise ValueError("existing sidecar output retained; use a new output path")
+    src = Source(checkpoint=checkpoint)
+    cfg = json.load(open(os.path.join(str(checkpoint.root) if checkpoint else MAIN, "config.json")))
     mtps = [int(x) for x in args.mtp.split(",")] if args.mtp else []
     pl = plan(src, mtps, not args.no_vision)
     w = gguf.GGUFWriter(args.out + ".tmp", "deepseek41-sidecar")
-    w.add_name("DeepSeek V4.1 Flash UNCENSORED - MTP heads + vision tower (Strata v41 sidecar)")
-    w.add_string("deepseek41.sidecar.source", "https://huggingface.co/dealignai/DeepSeek-V4.1-Flash-UNCENSORED-FP8")
+    w.add_name(checkpoint.name + " - MTP + vision" if checkpoint else
+               "DeepSeek V4.1 Flash UNCENSORED - MTP heads + vision tower (Strata v41 sidecar)")
+    w.add_string("deepseek41.sidecar.source", checkpoint.url if checkpoint else
+                 "https://huggingface.co/dealignai/DeepSeek-V4.1-Flash-UNCENSORED-FP8")
+    if checkpoint:
+        w.add_string("deepseek41.sidecar.source_revision", checkpoint.revision)
     w.add_array("deepseek41.sidecar.mtp_blocks", mtps)
     w.add_string("deepseek41.sidecar.mtp_experts_type", "MXFP4 (lossless repack of the checkpoint FP4)")
     if not args.no_vision:
@@ -139,8 +147,14 @@ def write(args):
 
 def verify(args):
     """Experts: dequantized MXFP4 == the checkpoint's FP4 values exactly.  Q8_0: relative RMS error per tensor."""
-    src = Source()
+    checkpoint = getattr(args, "checkpoint_source", None)
+    src = Source(checkpoint=checkpoint)
     r = gguf.GGUFReader(args.verify)
+    if checkpoint:
+        field = r.fields.get("deepseek41.sidecar.source_revision")
+        revision = bytes(field.parts[field.data[0]]).decode("utf-8") if field else None
+        if revision != checkpoint.revision:
+            raise ValueError("sidecar is not tagged with the selected checkpoint revision")
     rng = np.random.default_rng(0)
     worst, n_mx, n_q8 = 0.0, 0, 0
     for t in r.tensors:
@@ -169,7 +183,9 @@ def main():
     ap.add_argument("--no-vision", action="store_true")
     ap.add_argument("--verify")
     ap.add_argument("--sample", type=int, default=4)
+    CP.add_arguments(ap)
     args = ap.parse_args()
+    args.checkpoint_source = CP.from_arguments(args)
     if args.verify:
         verify(args)
     elif args.out:
