@@ -2,7 +2,7 @@
 
 Experimental implementation, 2026-10-17. This work builds on the 1017 loader and Q2_K direct-input changes in
 [fork PR #1](https://github.com/sakamoto-sann/Xolotl/pull/1). CUDA compilation and helper tests now pass;
-full-model inference and speed measurements remain pending. See [runtime qualification](DEEPSEEK_1017_RUNTIME.md).
+short full-model inference and speed measurements have passed. See [runtime qualification](DEEPSEEK_1017_RUNTIME.md).
 Keep the PR draft until the remaining gates pass.
 
 ## Mechanisms selected from the papers
@@ -80,8 +80,7 @@ displacing a hotter resident. Arena capacity and VRAM slot counts retain their e
   need disjoint metadata regions. The existing default capture path remains in place.
 
 The worker-generation wait correction also applies to the existing small verification path with new flags off.
-It is a lifetime correction, not a claimed throughput improvement. Numerical equivalence of the default and
-opt-in paths is still a pending runtime check.
+It is a lifetime correction, not a claimed throughput improvement. Eight real-model 32-token trials matched generated IDs across default and opt-in paths; this is short-output evidence.
 
 ## Counters and validation status
 
@@ -94,22 +93,17 @@ They do not measure aligned physical SSD reads, read amplification, device bandw
 layer independence, bounded completion order, partial reads, duplicate notification rejection, and visibility
 of concurrent reader writes. Its CMake target has now built and passed on Linux; macOS ThreadSanitizer also passed.
 
-Performed: source inspection, `git diff --check`, CUDA/CPU expert compilation and the helper tests above.
-A separate read-only self-review covered buffer lifetimes,
-slot bounds, stream/event dependencies, combinations of the two flags, and default branches. No independent
-reviewer was available with sub-agents disabled. Full-model runtime correctness is not yet established.
+Performed: CUDA builds, helper tests, real-file geometry, actual-dimension synthetic CUDA pipeline checks
+(six configurations x 96 calls), short arithmetic and eight measured code-generation trials. See
+[runtime qualification](DEEPSEEK_1017_RUNTIME.md) for numbers and the exact test scope.
+A separate read-only self-review covered buffer lifetimes, slot bounds, stream/event dependencies, flag combinations,
+default branches and uniform/deferred VRAM budget enforcement. No independent reviewer was available with
+sub-agents disabled.
 
-Pending runtime checks (the user has now authorized builds and inference):
+Remaining qualification: matching-reference logits/routing, long-context and varied prompts, repeated warm/cold
+trials, CUDA overlap timelines, broader error cleanup, and simultaneous active Comfy generation. Logical expert
+and Engram counters are distinct from physical SSD byte counters. HIP/SYCL remain unvalidated.
 
-1. Complete real-file geometry and native regressions. CPU/CUDA compilation and helper/race probes passed;
-   other backend toolchains remain unvalidated.
-2. Compare default vs pipeline vs policy vs both flags on identical short prompts and verification batches,
-   including all-hit, all-miss, partial/stashed reads, mixed blob sizes, fallback staging and error cleanup.
-   Compare routed expert outputs, logits and generated tokens; inspect arena/VRAM byte-check diagnostics.
-3. Check CUDA copy/kernel timelines, event reuse across layers and calls, teardown, and memory use. Measure
-   physical SSD bytes separately from logical counters, then compare same-day baseline latency and throughput.
-4. Include Engram SSD misses, cold/warm caches, prefill and concurrent Comfy work in later resource measurements.
-   Choose the RAM/VRAM reserve and download limits from those observations before operational use.
-
-For a later article, distinguish paper results, this source implementation, and eventual hardware measurements.
-At this stage only the source implementation and its limitations can be reported.
+For an article, distinguish the papers' reported results, the selected mechanisms implemented here and this
+machine's short-run measurements. The adaptive-LRU ablation already captures most of the observed improvement;
+the frequency heuristic's small extra difference is not established without repeated trials.
