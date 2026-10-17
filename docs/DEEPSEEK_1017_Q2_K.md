@@ -1,9 +1,10 @@
-# DeepSeek 1017 Q2_K direct input (draft, unbuilt)
+# DeepSeek 1017 Q2_K direct input
 
 The opt-in `ds41_generate --llama-q2-k -m <any-shard.gguf>` source path reads the
 existing llama.cpp files directly. It does not merge files, convert model weights
 or materialize the Engram tables in RAM. The default native GSQ path remains the
-default. This implementation has **not been compiled or run with a model**.
+default. CUDA compilation and helper tests have passed; full-model generation is still pending.
+See [runtime qualification](DEEPSEEK_1017_RUNTIME.md) for current evidence and measurement limits.
 
 ## Inspected artifact
 
@@ -79,19 +80,17 @@ Source inspection of llama.cpp converter commit
 `2076412598e99127ea2554467b2b7530856895d3` found that its V4/V4.1 mapping returns
 the named tensors without a RoPE permutation. The row decoder follows ggml's
 Q2_K layout: 16 scale/min bytes, 64 packed code bytes and two half scales.
-`test_ds41_q2_row` is prepared to compare 1,024 blocks with ggml's decoder, but
-has not been built or executed. `test_ds41_geometry <file> --llama-q2-k` is also
-prepared for a later real-file geometry check.
+`test_ds41_q2_row` has now passed the 1,024-block comparison with ggml's decoder.
+`test_ds41_geometry <file> --llama-q2-k` is built and awaiting all ten complete files.
 
-Pending: compile affected backends, run the row/reference gates and native
-regressions, verify completed weight hashes, compare logits/routing with a
+Pending: run the real-file gates and native regressions, finish weight hash verification, compare logits/routing with a
 matching llama.cpp reference, then assess context length, RAM/VRAM and speed on
 the target GPU. No throughput, precision or successful 1017 generation is claimed.
 Review so far is a separate read-only self-review; no independent reviewer was
 available and delegation was disabled.
 
-ComfyUI retains priority. No build, model conversion, inference or benchmark
-was started. The low-impact downloader configuration was left unchanged.
+The initial source-only phase kept builds and inference stopped. The user has since lifted that hold and
+prioritized Xolotl; build/helper results and the prepared inference procedure are recorded in the runtime notes.
 The existing 60 GiB arena and large prompt defaults are not suitable as-is for
 a 32 GB machine. Before any later run, choose an explicit RAM/VRAM budget and
 small prompt/context, and use `--route-bias 0 --route-bias-file 0` for initial

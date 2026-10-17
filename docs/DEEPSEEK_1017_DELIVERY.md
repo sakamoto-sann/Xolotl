@@ -1,8 +1,9 @@
 # Experimental SSD expert delivery and cache placement
 
-Source implementation only, 2026-10-17. This work builds on the 1017 loader and Q2_K direct-input changes in
-[fork PR #1](https://github.com/sakamoto-sann/Xolotl/pull/1). No build, inference run, or speed measurement has
-been performed for this change. Keep the PR draft until the pending checks below are authorized and pass.
+Experimental implementation, 2026-10-17. This work builds on the 1017 loader and Q2_K direct-input changes in
+[fork PR #1](https://github.com/sakamoto-sann/Xolotl/pull/1). CUDA compilation and helper tests now pass;
+full-model inference and speed measurements remain pending. See [runtime qualification](DEEPSEEK_1017_RUNTIME.md).
+Keep the PR draft until the remaining gates pass.
 
 ## Mechanisms selected from the papers
 
@@ -91,16 +92,17 @@ They do not measure aligned physical SSD reads, read amplification, device bandw
 
 `test_ds41_delivery.cpp` prepares checks for history aging, workload shifts, admission, batching invariance,
 layer independence, bounded completion order, partial reads, duplicate notification rejection, and visibility
-of concurrent reader writes. Its CMake target is present but **has not been built or run**.
+of concurrent reader writes. Its CMake target has now built and passed on Linux; macOS ThreadSanitizer also passed.
 
-Performed: source inspection and `git diff --check`. A separate read-only self-review covered buffer lifetimes,
+Performed: source inspection, `git diff --check`, CUDA/CPU expert compilation and the helper tests above.
+A separate read-only self-review covered buffer lifetimes,
 slot bounds, stream/event dependencies, combinations of the two flags, and default branches. No independent
-reviewer was available with sub-agents disabled. Neither compilation nor runtime correctness is established.
+reviewer was available with sub-agents disabled. Full-model runtime correctness is not yet established.
 
-Pending after build/inference permission is restored:
+Pending runtime checks (the user has now authorized builds and inference):
 
-1. Build the touched backends and run the prepared CPU-only helper tests; exercise the reader pool with delayed
-   worker wakeups, repeated generations, and shutdown. Use a race detector where supported.
+1. Complete real-file geometry and native regressions. CPU/CUDA compilation and helper/race probes passed;
+   other backend toolchains remain unvalidated.
 2. Compare default vs pipeline vs policy vs both flags on identical short prompts and verification batches,
    including all-hit, all-miss, partial/stashed reads, mixed blob sizes, fallback staging and error cleanup.
    Compare routed expert outputs, logits and generated tokens; inspect arena/VRAM byte-check diagnostics.
