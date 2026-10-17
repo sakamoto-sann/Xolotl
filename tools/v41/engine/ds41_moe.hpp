@@ -295,7 +295,7 @@ struct Ds41MoeConfig {
     double max_arena_gib = 60.0;  ///< hard ceiling on the arena, whatever `arena_gib` says
     /// VRAM budget for the expert cache in GiB, for geometries whose blob size varies per layer (MiMo): the seed
     /// takes the ranked profile's head until `slots` experts OR this many bytes, sizing each slot to its expert.
-    /// 0 = `slots` x the largest blob.  Ignored for uniform geometries (DS4: `slots` alone, as before).
+    /// 0 = `slots` x the largest blob. Uniform geometries also honor a positive byte budget, including deferred seeds.
     double slot_gib = 0.0;
     /// Leave the experts the VRAM seed takes OUT of the host arena: a cache that never evicts never reads their arena
     /// copies again, so the bytes go to the next-ranked experts (fewer file-tier reads); with `vram_lru` an evicted

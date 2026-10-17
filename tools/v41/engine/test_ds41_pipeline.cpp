@@ -80,11 +80,13 @@ int main() {
     cuda_check(cudaMalloc((void **) &output, 2 * H * sizeof(float)));
     std::vector<std::vector<float>> reference;
     int failures = 0;
-    for (int mode = 0; mode < 4; ++mode) {
-        // mode 0 = canonical all-file; 1 = existing cache; 2 = pipeline; 3 = pipeline + policy.
+    for (int mode = 0; mode < 6; ++mode) {
+        // 0 = all-file; 1 = cache; 2 = pipeline; 3 = policy + deferred cache; 4/5 = budget below one slot.
         Ds41MoeConfig cfg;
         cfg.threads = 2; cfg.pcie_frac = 1; cfg.pf_b = 2;
-        cfg.no_cache = mode == 0; cfg.slots = mode == 0 ? 0 : 4;
+        cfg.no_cache = mode == 0; cfg.slots = mode == 0 ? 0 : NL * NX;
+        cfg.slot_gib = mode == 0 ? 0 : (mode < 4 ? 4.0 : 0.5) * layout.bytes / 1073741824.0;
+        cfg.defer_cache = mode == 3 || mode == 5;
         cfg.arena_gib = cfg.max_arena_gib = mode == 0 ? 0 : (4.0 * layout.bytes + 1) / 1073741824.0;
         cfg.vram_lru = mode != 0; cfg.file_pipeline = mode >= 2;
         cfg.arena_adapt = cfg.cache_freq_recency = mode == 3; cfg.cache_half_life = 4;
@@ -93,6 +95,9 @@ int main() {
         std::vector<std::pair<int32_t, int32_t>> rank;
         for (int e = 0; e < NX; ++e) for (int l = 0; l < NL; ++l) rank.emplace_back(l, e);
         if (!tier.seed_from_ranked(rank, error)) { std::fprintf(stderr, "seed: %s\n", error.c_str()); return 1; }
+        if (tier.resident() != (mode > 0 && mode < 4 ? 4 : 0)) {
+            std::fprintf(stderr, "uniform VRAM budget not honored in mode %d\n", mode); return 1;
+        }
         for (size_t i = 0; i < calls.size(); ++i) {
             const auto & c = calls[i];
             std::vector<float> got(c.nt * H);

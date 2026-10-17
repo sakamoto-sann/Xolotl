@@ -1271,6 +1271,17 @@ bool Ds41MemoryBlobs::has(int64_t layer, int64_t expert) const {
 Ds41MoeTier::Ds41MoeTier() : im_(new Ds41MoeImpl) {}
 Ds41MoeTier::~Ds41MoeTier() { close(); }
 
+#if defined(DS4_MOE_CUDA)
+// Uniform Q2_K input still needs the CLI's auto-VRAM byte budget. Keep the explicit
+// slot limit as an upper bound, including when the cache opens after prompt buffers are freed.
+static int64_t uniform_cache_slots(const Ds41MoeImpl& im) {
+    if (im.cfg.slots <= 0) return 0;
+    if (im.cfg.slot_gib == 0) return im.cfg.slots;
+    const uint64_t stride = ((uint64_t) im.blob + 255) / 256 * 256;
+    return (int64_t) std::min((double) im.cfg.slots, im.cfg.slot_gib * 1073741824.0 / (double) stride);
+}
+#endif
+
 bool Ds41MoeTier::init(const std::string& gguf, const Ds41MoeConfig& cfg, std::string& err) {
     Ds41MoeGeom g;
     if (!ds41_moe_geom_from_gguf(gguf, g, err)) return false;
@@ -1286,6 +1297,9 @@ bool Ds41MoeTier::init(const Ds41MoeGeom& geom, Ds41BlobSource* blobs, const Ds4
     im_->g = geom;
     im_->cfg = cfg;
     im_->blobs = blobs;
+    if (!std::isfinite(cfg.slot_gib) || cfg.slot_gib < 0) {
+        err = "VRAM slot budget must be finite and nonnegative"; return false;
+    }
     if (!std::isfinite(cfg.cache_half_life) || cfg.cache_half_life <= 0) {
         err = "cache half-life must be finite and positive"; return false;
     }
@@ -1421,9 +1435,12 @@ bool Ds41MoeTier::init(const Ds41MoeGeom& geom, Ds41BlobSource* blobs, const Ds4
     }
     // a geometry whose blob size varies per layer opens its cache at the seed, sized to the ranked experts
     if (!cfg.no_cache && cfg.slots > 0 && !im_->mixed_sizes && !cfg.defer_cache) {   // defer_cache: opened at the seed
-        std::vector<int64_t> sizes((size_t) cfg.slots, im_->blob);
-        gp.cache.reset(new strata::core::ExpertCache());
-        if (!gp.cache->open_sized(sizes, geom.n_layers, geom.n_experts, err)) return false;
+        const int64_t count = uniform_cache_slots(*im_);
+        if (count > 0) {
+            std::vector<int64_t> sizes((size_t) count, im_->blob);
+            gp.cache.reset(new strata::core::ExpertCache());
+            if (!gp.cache->open_sized(sizes, geom.n_layers, geom.n_experts, err)) return false;
+        }
     }
     // NO ARENA HERE.  The arena is 52-73 GiB of the real model and it is ORDERED (build_arena): building it twice -
     // once in index order here, once from the profile when the caller seeds - would read the file twice and page
@@ -1687,10 +1704,13 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
     // uniform blobs with defer_cache: the cache opens now (after the prompt chunks gave their VRAM back)
     if (!im_->mixed_sizes && im_->cfg.defer_cache && im_->gpu && !im_->gpu->cache && !im_->cfg.no_cache &&
         im_->cfg.slots > 0) {
-        std::vector<int64_t> sizes((size_t) im_->cfg.slots, im_->blob);
-        im_->gpu->cache.reset(new strata::core::ExpertCache());
-        if (keep_cache_mode()) im_->gpu->cache->set_segment_bytes((int64_t) 64 << 20);
-        if (!im_->gpu->cache->open_sized(sizes, im_->g.n_layers, im_->g.n_experts, err)) return false;
+        const int64_t count = uniform_cache_slots(*im_);
+        if (count > 0) {
+            std::vector<int64_t> sizes((size_t) count, im_->blob);
+            im_->gpu->cache.reset(new strata::core::ExpertCache());
+            if (keep_cache_mode()) im_->gpu->cache->set_segment_bytes((int64_t) 64 << 20);
+            if (!im_->gpu->cache->open_sized(sizes, im_->g.n_layers, im_->g.n_experts, err)) return false;
+        }
     }
     if (!im_->gpu || !im_->gpu->cache) return true;   // no cache: nothing to seed
     const int64_t want = std::min<int64_t>(im_->cfg.slots, im_->gpu->cache->full_slots());

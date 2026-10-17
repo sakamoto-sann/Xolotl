@@ -390,7 +390,7 @@ int main(int argc, char ** argv) {
     Ds41MoeTier tier;
     Ds41MoeConfig mc;
     mc.cpu_only = a.experts == "cpu" || ggml_backend_is_cpu(be);
-    mc.slots = a.slots > 0 ? a.slots : TG.n_layers * TG.n_experts;
+    mc.slots = a.slots > 0 ? a.slots : slot_gib > 0 ? TG.n_layers * TG.n_experts : 0;
     mc.slot_gib = a.slots > 0 ? 0.0 : slot_gib;
     mc.pcie_frac = a.pcie;
     mc.pf_b = a.pf_b;   // predicted prefetch (Ds41Dense::predict -> tier.prefetch), experts per layer
@@ -441,6 +441,11 @@ int main(int argc, char ** argv) {
         if (!a.rank.empty()) {
             ranked = ds41_read_ranked(a.rank, err);
             if (ranked.empty()) { std::fprintf(stderr, "ds41_generate: --rank: %s\n", err.c_str()); return 1; }
+        } else if (a.llama_q2_k) {
+            // No learned rank ships with this input: spread the bounded RAM/VRAM seed
+            // over every layer, rather than filling only the first few layers.
+            for (int64_t e = 0; e < TG.n_experts; ++e)
+                for (int64_t l = 0; l < TG.n_layers; ++l) ranked.emplace_back((int32_t) l, (int32_t) e);
         } else {
             for (int64_t l = 0; l < TG.n_layers; ++l)
                 for (int64_t e = 0; e < TG.n_experts; ++e) ranked.emplace_back((int32_t) l, (int32_t) e);
