@@ -26,6 +26,7 @@ hold and made Xolotl the priority. This document does not yet establish working 
 | `test_ds41_q2_row` | Passed on Linux against ggml: 1,024 Q2_K blocks, all 256 lanes equal |
 | `test_ds41_q2_expert --synthetic q2_K/q3_K` | Passed on the 3090 at 5,120 / 2,304 dimensions: GPU weight dequantization equals ggml on all 35,389,440 values, and single/multi-token and decode-once/per-entry checks passed |
 | Original `native_expert_parity --synthetic q4_K/q8_0` | Passed with the original 2,560 / 640 defaults after parameterizing test dimensions |
+| `test_ds41_pipeline` | Passed at the 1017 expert dimensions (5,120 / 2,304), using two synthetic layers and 16 experts each. Four configurations x 96 calls, host/device outputs and single/multi-token calls matched the existing all-file GPU path bit for bit; 540 pipeline transfers, and 432 transfers / 68 RAM swaps with policy enabled |
 | Read-pool lifetime probe | Extracted the actual pool into a temporary probe: 1,000 alternating zero/tiny/large batches, 32 workers, macOS ThreadSanitizer; passed |
 | Python input tests | 15 passed |
 | Python checkpoint suite | 16 discovered: 10 passed, 6 skipped because optional dependencies/fixtures were unavailable |
@@ -60,6 +61,10 @@ the CPU path and 0.0125 for the GPU path, within the existing test's activation-
 expert outputs are not bit-identical. `--pcie 1` keeps single-token expert computation on the GPU in the first
 comparison, avoiding that placement-dependent arithmetic difference. Synthetic parity does not prove complete
 model correctness.
+
+The pipeline integration source deliberately delays independent 4 KiB-aligned read parts. It checks finite,
+nonzero outputs and requires actual pipeline transfers and RAM swaps, covering staging reuse, cache lifetime
+and teardown. It uses memory-backed synthetic weights, not real SSD reads or full-model execution.
 
 Each inference runs under the shared GPU lock and memguard with MemoryMax 18 GiB, MemorySwapMax 0, at least
 22 GiB available before starting and a 4 GiB system-available floor. Existing Comfy services remain running and
