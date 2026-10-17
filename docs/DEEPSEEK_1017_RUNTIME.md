@@ -6,7 +6,8 @@ hold and made Xolotl the priority. This document does not yet establish working 
 
 ## Inputs and hardware
 
-- Source tree: `13a627af3c40099f05d7b1fe80715ce72d8a6534`. The remote build tree's tracked files match this commit.
+- Engine implementation: `13a627af3c40099f05d7b1fe80715ce72d8a6534`; the tracked build tree matched it at the
+  successful engine build. Subsequent test/documentation additions do not change the engine source.
 - `ds41_generate` SHA-256: `a08e374712924735bf803cbacac5ad562b257cd0e1c054c18745be0159a3961e`.
 - ggml: llama.cpp `3cf03257f219afbe7334045ff7c6a06ac68c627d` plus `tools/xolotl/ggml/xolotl-ggml.patch`.
 - Model: the pinned ten-file artifact in [the Q2_K input contract](DEEPSEEK_1017_Q2_K.md), 264,515,416,800 bytes.
@@ -23,6 +24,8 @@ hold and made Xolotl the priority. This document does not yet establish working 
 | Geometry, row-decoder, delivery, ops, dense and CPU/GPU MoE test executables | Built; model/fixture-dependent tests are not yet run |
 | `test_ds41_delivery` | Passed on Linux/GCC 14 and macOS/Clang; macOS ThreadSanitizer also passed |
 | `test_ds41_q2_row` | Passed on Linux against ggml: 1,024 Q2_K blocks, all 256 lanes equal |
+| `test_ds41_q2_expert --synthetic q2_K/q3_K` | Passed on the 3090 at 5,120 / 2,304 dimensions: GPU weight dequantization equals ggml on all 35,389,440 values, and single/multi-token and decode-once/per-entry checks passed |
+| Original `native_expert_parity --synthetic q4_K/q8_0` | Passed with the original 2,560 / 640 defaults after parameterizing test dimensions |
 | Read-pool lifetime probe | Extracted the actual pool into a temporary probe: 1,000 alternating zero/tiny/large batches, 32 workers, macOS ThreadSanitizer; passed |
 | Python input tests | 15 passed |
 | Python checkpoint suite | 16 discovered: 10 passed, 6 skipped because optional dependencies/fixtures were unavailable |
@@ -45,12 +48,18 @@ changed configuration and conversion branches. HIP/SYCL toolchains and execution
 The controller waits for all ten size/SHA-256-verified files and a successful build, then runs Python header preflight
 and the C++ geometry gate. An exact-routing arithmetic smoke must answer 42 before performance trials can start.
 
-The trials use a non-thinking Python code prompt, temperature 0, seed 42, four CPU threads, context 4,096,
+The trials use a non-thinking Python code prompt, temperature 0, seed 42, four CPU threads, context 4,096, `--pcie 1`,
 `--prompt-batch 0 --prefill-chunk 1 --no-chunk-prefetch --no-enc-skip --route-bias 0 --route-bias-file 0`.
 The RAM arena is compared at 8 and 12 GiB, each with default placement versus
 `--file-pipeline --cache-policy freq-recency`. The VRAM margin is 3 GiB. The Engram cache is bounded with
 `STRATA_ENGRAM_CACHE_ROWS=131072`; its tables stay on SSD and learned n-gram/hash metadata is unchanged.
 DSpark and n-gram speculative decoding are not part of this initial comparison.
+
+The synthetic expert test measured relative L1 error versus a dequantized-weight F32 computation of 0.0221 for
+the CPU path and 0.0125 for the GPU path, within the existing test's activation-rounding tolerance. CPU/GPU
+expert outputs are not bit-identical. `--pcie 1` keeps single-token expert computation on the GPU in the first
+comparison, avoiding that placement-dependent arithmetic difference. Synthetic parity does not prove complete
+model correctness.
 
 Each inference runs under the shared GPU lock and memguard with MemoryMax 18 GiB, MemorySwapMax 0, at least
 22 GiB available before starting and a 4 GiB system-available floor. Existing Comfy services remain running and
