@@ -1,4 +1,4 @@
-// test_ds41_kvfp4 [--cuda] - the --kv-fp4 caches (ds41_dense.cpp): rows fake-quantized as the graph does (the fused
+// test_ds41_kvfp4 [--cuda] [--rows 1..131072] - the --kv-fp4 caches (ds41_dense.cpp): rows fake-quantized as the graph does (the fused
 // GGML_OP_DSV41_FAKE_QUANT), written with set_rows into NVFP4 (compressed KV, FP4_E4M3_16) / MXFP4 (indexer keys,
 // FP4_POW2_32) and read back with get_rows must equal the fake-quant output BIT FOR BIT - as the BF16 caches do.
 #include "ds41_ops.hpp"
@@ -11,6 +11,8 @@
 #endif
 
 #include <cmath>
+#include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <random>
@@ -20,7 +22,16 @@
 using namespace strata::v41;
 
 int main(int argc, char ** argv) {
-    bool cuda = argc > 1 && std::string(argv[1]) == "--cuda";
+    bool cuda = false;
+    int64_t test_rows = 8192;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--cuda") cuda = true;
+        else if (std::string(argv[i]) == "--rows" && i + 1 < argc) {
+            char * end = nullptr; errno = 0;
+            test_rows = std::strtoll(argv[++i], &end, 10);
+            if (errno || !end || *end || test_rows < 1 || test_rows > 131072) return 2;
+        } else return 2;
+    }
     ggml_backend_t be = nullptr;
 #if defined(GGML_USE_CUDA)
     if (cuda) be = ggml_backend_cuda_init(0);
@@ -30,7 +41,7 @@ int main(int argc, char ** argv) {
     struct Case { Ds41Quant mode; ggml_type t; int64_t W; const char * name; };
     for (const Case & cs : { Case{ Ds41Quant::FP4_E4M3_16, GGML_TYPE_NVFP4, 512, "comp nvfp4" },
                              Case{ Ds41Quant::FP4_POW2_32, GGML_TYPE_MXFP4, 128, "idxk mxfp4" } }) {
-        const int64_t W = cs.W, R = 8192;
+        const int64_t W = cs.W, R = test_rows;
         std::mt19937_64 rng(20261015);
         std::normal_distribution<float> nd(0.0f, 1.0f);
         std::uniform_int_distribution<int> ex(-12, 6);
