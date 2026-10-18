@@ -82,3 +82,35 @@ The runtime parity gate is unresolved, so this report does not recommend changin
 as a production-ready lossless decoder. The sidecars and opt-in compatibility code remain available for further work.
 
 A separate Mac DSH 0.2.1-alpha.5 integration check passed with the 40-expert DSpark trial: the model called the read tool and returned a newly generated local fixture exactly (9,509-token input, 160.708 seconds end to end). Private DSH request/event history is not published. This functional check does not close the regenerate-parity gap above.
+
+## Regeneration follow-up: opt-in file-union split
+
+A longer-output repeat probe rules out the one-token request as a necessary trigger. With the original D3 profile, the third coding response had already changed from 85 to 113 tokens before the one-token request. All five complete responses passed 2,000 lower_bound cases when allowed 192 tokens. The earlier 96-token failure was truncation of the longer answer, not proof of corrupted code/cache state.
+
+D3 serves at most eight distinct file experts on the GPU in a call; additional file experts use the CPU activation path (Q8_K rather than GPU Q8_1). With `STRATA_TIER_BATCH=0`, all five complete responses matched the normal 85-token answer and CPU expert count was zero, but warm latency was 26.90-28.31 s.
+
+`STRATA_TIER_BATCH_FILE_SPLIT=1` now optionally bisects only a batched call whose distinct uncached, non-arena, non-prefetched file union exceeds the existing staging slots. It splits before routing observation or any reader/stream work. Each child completes before the next starts; buffer capacities and events are unchanged. This limits file CPU fallback when the configured single-token top-k fits the staging slots. It does not override a deliberately reduced arena PCIe share. Speculative read-ahead (`STRATA_D3_SPEC`) was left off. With the option disabled, the existing batched implementation is used.
+
+| Same coding fixture, API | Cold end-to-end | Warm median (4 sequential requests) | Full-answer equality |
+|---|---:|---:|---|
+| Normal | 102.24 s | 23.51 s | 5/5 same, 85 tokens |
+| Original DSpark D3 | 102.71 s | variable output lengths | 3/5 same, 2/5 longer (113) |
+| DSpark, per-token MoE | 101.37 s | 27.02 s | 5/5 same, 85 tokens |
+| DSpark, file-union split | 93.70 s | 20.93 s | 5/5 same, 85 tokens |
+
+The exploratory split/normal warm medians differed by 10.96%. The first normal profile reused a previously loaded API (a 12-token smoke preceded this probe), while the other profiles started fresh; the controlled same-executable comparison below supersedes this timing estimate. All five split outputs matched the normal answer and each passed 2,000 cases. Native logs reported zero CPU experts. Observation began during the cold request; all 131 samples had zero inference-cgroup swap/OOM, and minimum observed MemAvailable was 7.15 GiB. These are sequential warm samples of one prompt, not an independent multi-task benchmark or proof of universal greedy parity. See `regeneration-results.json` and `regeneration-fixtures.json` for exact outputs and settings.
+
+The unmodified normal API remains the DSH default. The opt-in candidate is retained for further qualification. A separate default-off replay produced the identical 85-token answer on cold and repeated requests. Synthetic GPU regression passed all six modes: 96 calls/mode with the option disabled and 144 calls/mode enabled, including a 16-expert union, both output paths, zero weights and cache/arena replacement. Enabled output was byte-identical to per-token GPU calls, and CPU experts remained zero. HIP/SYCL coverage remains unavailable; the PR remains draft.
+
+### Final same-executable comparison
+
+Both profiles were started fresh using executable SHA-256 `4eb9c5720541512ce3e9c204f8a5691e47e3e651b7f32941fcd9bd4e312547d2`. The same six-request sequence, 4,060-token prompt, temperature 0, seed 42, 192-token output cap (except the deliberate one-token request), 131,072 context, 16 GiB arena and 1.5 GiB VRAM margin were used. Normal ran first; caches were not globally evicted. This is a sequential warm experiment, not independent randomized trials.
+
+| Profile | Cold end-to-end | Warm median (4 requests) | Normal answer match | Quality |
+|---|---:|---:|---|---|
+| Normal | 100.859 s | 24.953 s | 5/5, 85 tokens | 2,000 cases each |
+| DSpark + file split | 93.293 s | 20.884 s | 5/5, 85 tokens | 2,000 cases each |
+
+Matched warm latency decreased by 16.31%. The original exploratory estimate above is superseded by this pair. Complete per-request timings, configurations and texts are in the JSON files. This establishes parity and a latency improvement for this fixture; longer-context input, other tasks, sampling and long-running stability remain unqualified. The default-off replay also returned the normal answer. Source/test self-review was performed because an independent reviewer was unavailable; HIP/SYCL builds remain missing, so this is still a draft.
+
+Synthetic regression: `test_ds41_pipeline` passed 6 modes x 96 calls with the option disabled; `STRATA_TIER_BATCH_FILE_SPLIT=1 test_ds41_pipeline` passed 6 modes x 144 calls with the option enabled, with byte-identical per-token GPU reference and zero CPU experts. See `file-split-regression.txt`. The initial 256 MiB test-controller cap was insufficient; the successful rerun peaked at 1.2 GiB under a 4 GiB cap, separate from the inference cgroup.

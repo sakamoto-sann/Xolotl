@@ -1,0 +1,26 @@
+[1/2] Building CXX object CMakeFiles/test_ds41_pipeline.dir/tools/v41/engine/test_ds41_pipeline.cpp.o
+[2/2] Linking CXX executable test_ds41_pipeline
+TEST file_split=0
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+mode 0: 96 calls, 0 completion transfers, 0 RAM swaps, 0 cumulative failures
+mode 1: 96 calls, 0 completion transfers, 0 RAM swaps, 0 cumulative failures
+mode 2: 96 calls, 540 completion transfers, 0 RAM swaps, 0 cumulative failures
+mode 3: 96 calls, 432 completion transfers, 68 RAM swaps, 0 cumulative failures
+mode 4: 96 calls, 540 completion transfers, 0 RAM swaps, 0 cumulative failures
+mode 5: 96 calls, 540 completion transfers, 0 RAM swaps, 0 cumulative failures
+TEST file_split=1
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 25 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested)
+mode 0: 144 calls, 0 completion transfers, 0 RAM swaps, 0 cumulative failures
+mode 1: 144 calls, 0 completion transfers, 0 RAM swaps, 0 cumulative failures
+mode 2: 144 calls, 1928 completion transfers, 0 RAM swaps, 0 cumulative failures
+mode 3: 144 calls, 1256 completion transfers, 92 RAM swaps, 0 cumulative failures
+mode 4: 144 calls, 1928 completion transfers, 0 RAM swaps, 0 cumulative failures
+mode 5: 144 calls, 1928 completion transfers, 0 RAM swaps, 0 cumulative failures

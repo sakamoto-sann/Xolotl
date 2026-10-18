@@ -57,6 +57,8 @@ struct Call {
 };
 }
 int main() {
+    const char* split_env = std::getenv("STRATA_TIER_BATCH_FILE_SPLIT");
+    const bool file_split = split_env && split_env[0] == '1';
     Ds41MoeGeom g;
     g.n_embd = H; g.n_ff = FF; g.n_layers = NL; g.n_experts = NX; g.top_k = K;
     g.gu_type = 10; g.d_type = 11; g.eclass.assign(NL * NX, 0); g.cls_gu = {10}; g.cls_d = {11};
@@ -66,18 +68,19 @@ int main() {
     SplitSource source(layout);
     std::vector<Call> calls;
     for (int step = 0; step < 12; ++step) for (int l = 0; l < NL; ++l)
-        for (int nt : {1, 2}) for (bool device : {false, true}) {
+        for (int nt : {1, 2, 8}) for (bool device : {false, true}) {
+            if (nt == 8 && !file_split) continue;
             Call c{l, nt, device, {}, {}, {}};
             c.ids.resize(nt * K); c.w.resize(nt * K); c.x.resize(nt * H);
             for (int t = 0; t < nt; ++t) for (int k = 0; k < K; ++k) {
-                c.ids[t * K + k] = (step * 3 + t + k) % NX;
+                c.ids[t * K + k] = (step * 3 + (file_split ? 2 * t : t) + k) % NX;
                 c.w[t * K + k] = (step + k) % 5 ? 0.125f : 0.f;
             }
             for (int i = 0; i < nt * H; ++i) c.x[i] = 0.03f * std::sin((float) (step + i));
             calls.push_back(std::move(c));
         }
     float * output = nullptr;
-    cuda_check(cudaMalloc((void **) &output, 2 * H * sizeof(float)));
+    cuda_check(cudaMalloc((void **) &output, 8 * H * sizeof(float)));
     std::vector<std::vector<float>> reference;
     int failures = 0;
     for (int mode = 0; mode < 6; ++mode) {
@@ -116,6 +119,20 @@ int main() {
                 std::all_of(got.begin(), got.end(), [](float v) { return v == 0.f; })) {
                 std::fprintf(stderr, "mode %d call %zu has nonfinite or all-zero output\n", mode, i); return 1;
             }
+            if (mode == 0 && file_split && c.nt > 1) {
+                // The wide union routes all 16 experts (>8 staging slots). Compare with separate GPU
+                // calls, including zero routing weights and both host/device batched output paths.
+                std::vector<float> sequential(got.size());
+                for (int t = 0; t < c.nt; ++t) {
+                    if (!tier.run_to_dev(c.layer, c.ids.data() + t * K, c.w.data() + t * K,
+                                         c.x.data() + t * H, output)) return 1;
+                    cuda_check(cudaMemcpy(sequential.data() + t * H, output, H * sizeof(float), cudaMemcpyDeviceToHost));
+                }
+                if (std::memcmp(got.data(), sequential.data(), got.size() * sizeof(float))) {
+                    std::fprintf(stderr, "file split differs from per-token GPU output at call %zu\n", i);
+                    ++failures;
+                }
+            }
             if (mode == 0) reference.push_back(got);
             else if (std::memcmp(got.data(), reference[i].data(), got.size() * sizeof(float))) {
                 std::fprintf(stderr, "mode %d call %zu nt %d device %d differs\n", mode, i, c.nt, c.device);
@@ -123,6 +140,10 @@ int main() {
             }
         }
         const auto st = tier.stats();
+        if (file_split && st.cpu != 0) {
+            std::fprintf(stderr, "file split unexpectedly used %lld CPU experts\n", (long long) st.cpu);
+            ++failures;
+        }
         if (cfg.file_pipeline && !st.file_ready_transfers) ++failures;
         if (cfg.cache_freq_recency && !st.arena_swaps) ++failures;
         std::printf("mode %d: %zu calls, %lld completion transfers, %lld RAM swaps, %d cumulative failures\n",

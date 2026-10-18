@@ -3201,6 +3201,31 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
     const int64_t K = im.g.top_k;
     const int64_t B = im.blob;                        // staging stride
     const int   NE = nt * (int) K;
+    // Opt-in: a verify union wider than the pinned file stages otherwise spills to the CPU Q8_K
+    // activation path. Split before observing routing or issuing any work: each child owns the existing
+    // stages until its stream sync, so no staging/event capacity or buffer lifetime changes are needed.
+    static const bool file_split = std::getenv("STRATA_TIER_BATCH_FILE_SPLIT") &&
+        std::getenv("STRATA_TIER_BATCH_FILE_SPLIT")[0] == '1';
+    const char* fg_env = std::getenv("STRATA_FILE_GPU");
+    if (file_split && nt > 1 && !(fg_env && fg_env[0] == '0')) {
+        int32_t files[kMaxEnt];
+        int nf = 0;
+        for (int j = 0; j < NE; ++j) {
+            const int32_t e = ids[j];
+            if ((gp.cache && !im.cfg.no_cache && gp.cache->slot_of(layer, e) >= 0) || gp.arena.ptr(layer, e)) continue;
+            bool seen = false;
+            for (int i = 0; i < im.pf_n; ++i) seen = seen || im.pf_e[i] == e;
+            for (int i = 0; i < nf; ++i) seen = seen || files[i] == e;
+            if (!seen) files[nf++] = e;
+        }
+        if (nf > kMaxParts) {
+            const int n0 = nt / 2;
+            return gpu_run_n_ex(im, layer, n0, ids, w, x_host, out, out_dev) &&
+                gpu_run_n_ex(im, layer, nt - n0, ids + n0 * K, w + n0 * K, x_host + n0 * H,
+                             out ? out + n0 * H : nullptr,
+                             out_dev ? (uint8_t*) out_dev + (size_t) n0 * (size_t) H * sizeof(float) : nullptr);
+        }
+    }
     if (im.cache_history) im.cache_history->observe(layer, ids, NE, K);
     const double t0 = now_ms();
     Ds41MoeStats st;

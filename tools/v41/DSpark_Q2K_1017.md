@@ -71,3 +71,11 @@ the normal run completed in 85 tokens. The cause (cache lifecycle versus quantiz
 isolated. Both modes also failed the JSON arithmetic fixture; Japanese sentence-count instruction adherence differed.
 These are experimental results, not a lossless-runtime qualification. Keep the normal inference default until the
 runtime parity and workload results are resolved. Sidecar compatibility checks alone do not establish output parity.
+
+### Optional mitigation for verifier file overflow
+
+`STRATA_TIER_BATCH_FILE_SPLIT=1` recursively splits D3 calls whose file-expert union exceeds the eight existing staging slots. This avoids the overflow experts taking the CPU activation quantizer in the measured 1017 profile (`--pcie 1`, default D3 PCIe share, file GPU enabled). It leaves normal inference and the default verifier implementation in place when disabled. `STRATA_TIER_BATCH=0` is a slower diagnostic alternative.
+
+On the final 2026-10-18 same-executable coding regeneration probe, all five split outputs matched the normal answer and passed 2,000 cases each; four sequential warm requests had a median of 20.884 s versus normal 24.953 s (16.31% lower latency). Fresh processes used the same prompt/settings; normal ran first without global cache eviction. This qualifies one fixture only. It does not establish universal parity or a multi-task speedup. See the regeneration follow-up under `bench/results/2026-10-18-1017-q2k-dspark/`.
+
+Regression command: `STRATA_TIER_BATCH_FILE_SPLIT=1 test_ds41_pipeline`. It checks a 16-expert union against separate GPU calls, host/device outputs, zero weights and cache replacement across six modes; all 144 calls per mode passed. With the option disabled, the original 96 calls per mode passed.
