@@ -24,10 +24,13 @@
 int main(int argc, char ** argv) {
     std::string side, model, mainf, genf, dump;
     int max = 0;
+    bool llama_q2_k = false, validate_only = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto nx = [&]() { return std::string(i + 1 < argc ? argv[++i] : ""); };
-        if (a == "--sidecar") side = nx();
+        if (a == "--validate-only") validate_only = true;
+        else if (a == "--llama-q2-k") llama_q2_k = true;
+        else if (a == "--sidecar") side = nx();
         else if (a == "-m") model = nx();
         else if (a == "--main") mainf = nx();
         else if (a == "--gen") genf = nx();
@@ -35,9 +38,16 @@ int main(int argc, char ** argv) {
         else if (a == "--dump") dump = nx();
         else { std::fprintf(stderr, "unknown arg %s\n", a.c_str()); return 2; }
     }
-    if (side.empty() || model.empty() || mainf.empty() || genf.empty()) {
+    if (side.empty() || model.empty() || (!validate_only && (mainf.empty() || genf.empty()))) {
         std::fprintf(stderr, "usage: test_ds41_dspark --sidecar F -m F --main main.bin --gen gen.txt [--max N] [--dump F]\n");
         return 2;
+    }
+    if (validate_only) {
+        Ds41DSparkConfig cfg;
+        cfg.main_gguf = model; cfg.sidecar = side; cfg.llama_q2_k = llama_q2_k;
+        std::string err;
+        if (!ds41_validate_dspark(cfg, err)) { std::fprintf(stderr, "preflight: %s\n", err.c_str()); return 1; }
+        std::puts("DSpark sidecar preflight passed (no device allocation)"); return 0;
     }
 #ifdef DS41_HAVE_CUDA
     ggml_backend_t be = ggml_backend_cuda_init(0);
@@ -49,6 +59,7 @@ int main(int argc, char ** argv) {
     cfg.backend = be;
     cfg.sidecar = side;
     cfg.main_gguf = model;
+    cfg.llama_q2_k = llama_q2_k;
     Ds41DSpark ds;
     std::string err;
     if (!ds.init(cfg, err)) { std::fprintf(stderr, "init: %s\n", err.c_str()); return 1; }

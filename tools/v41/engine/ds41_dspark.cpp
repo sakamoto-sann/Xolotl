@@ -35,7 +35,8 @@ struct Ds41DSpark::Impl {
     ggml_context * wctx = nullptr;
     ggml_backend_buffer_t wbuf = nullptr;
     std::map<std::string, ggml_tensor *> w;
-    const uint8_t * embd = nullptr;    // trunk token_embd F16 rows on the mmap
+    const uint8_t * embd = nullptr;    // trunk token_embd rows on the mmap
+    ggml_type embd_type = GGML_TYPE_F16;
     size_t wbytes = 0;
     // state: per block window ring [DH, WIN]; inputs
     ggml_context * sctx = nullptr;
@@ -100,7 +101,11 @@ bool Ds41DSpark::Impl::load(std::string & e) {
     const TensorInfo * out = main->find("output.weight", &si);
     const TensorInfo * te = main->find("token_embd.weight");
     if (!out || !te) { e = "the trunk GGUF lacks output.weight / token_embd.weight"; return false; }
-    if (te->type != GGML_TYPE_F16) { e = "token_embd must be F16"; return false; }
+    embd_type = (ggml_type) te->type;
+    if ((!cfg.llama_q2_k && embd_type != GGML_TYPE_F16) ||
+        !ggml_get_type_traits(embd_type)->to_float || D % ggml_blck_size(embd_type)) {
+        e = "unsupported token_embd row type"; return false;
+    }
     if (!cfg.shared_head) src.push_back({ main.get(), out });
     // STRATA_DSPARK_EXP_TYPE=<ggml type name> (q4_K, q3_K, q2_K, iq4_xs, ...): the routed experts
     // (mtp.*.ffn.experts.w1/w2/w3, MXFP4 in the sidecar) are requantized ON LOAD (dequantize -> quantize, CPU threads).
@@ -223,6 +228,84 @@ bool Ds41DSpark::Impl::load(std::string & e) {
     return true;
 }
 
+namespace {
+bool validate_sidecar(const GgufModel & side, const Ds41DSparkConfig & cfg, std::string & err) {
+    if (cfg.llama_q2_k) {
+        // The llama.cpp trunk has no native config JSON. Accept only the official, pinned 1017 sidecar;
+        // reusing another V4.1 draft stack is not a qualified configuration.
+        const auto * revision = side.meta().get("deepseek41.sidecar.source_revision");
+        const auto * source = side.meta().get("deepseek41.sidecar.source");
+        if (!revision || revision->s != "1bae0e1088993b9b82de08f59de5be5a34e42170" ||
+            !source || source->s != "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/tree/1bae0e1088993b9b82de08f59de5be5a34e42170") {
+            err = "Q2_K DSpark requires a sidecar exported from pinned official DeepSeek-V4.1-Flash-1017";
+            return false;
+        }
+        if (cfg.block != 5 || cfg.n_used != 3 || cfg.noise_id != 128799) {
+            err = "Q2_K DSpark requires the 1017 block=5, top-k=3, noise=128799 contract"; return false;
+        }
+    }
+    // Validate graph inputs before allocating weights: a partial sidecar must return an error, not abort in W().
+    for (int b = 0; b < 3; ++b) {
+        for (const char * n : {"hc_attn_fn", "hc_attn_scale", "hc_attn_base", "hc_ffn_fn", "hc_ffn_scale", "hc_ffn_base",
+                              "attn_norm.weight", "attn.wq_a.weight", "attn.q_norm.weight", "attn.wq_b.weight",
+                              "attn.wkv.weight", "attn.kv_norm.weight", "attn.attn_sink", "attn.wo_a.weight", "attn.wo_b.weight",
+                              "ffn_norm.weight", "ffn.gate.weight", "ffn.gate.bias", "ffn.experts.w1.weight",
+                              "ffn.experts.w2.weight", "ffn.experts.w3.weight", "ffn.shared_experts.w1.weight",
+                              "ffn.shared_experts.w2.weight", "ffn.shared_experts.w3.weight"}) {
+            const std::string name = "mtp." + std::to_string(b) + "." + n;
+            if (!side.find(name)) { err = "DSpark sidecar missing " + name; return false; }
+        }
+    }
+    for (const char * n : {"mtp.0.main_proj.weight", "mtp.0.main_norm.weight", "mtp.2.norm.weight",
+                          "mtp.2.markov_head.embed.weight", "mtp.2.markov_head.head.weight", "mtp.2.confidence_head.proj.weight"}) {
+        if (!side.find(n)) { err = std::string("DSpark sidecar missing ") + n; return false; }
+    }
+    if (cfg.llama_q2_k) {
+        const std::vector<std::pair<std::string, std::vector<uint64_t>>> common = {
+            {"attn.attn_sink", {64}}, {"attn.kv_norm.weight", {512}}, {"attn.q_norm.weight", {1280}},
+            {"attn.wkv.weight", {5120,512}}, {"attn.wo_a.weight", {4096,8192}},
+            {"attn.wo_b.weight", {8192,5120}}, {"attn.wq_a.weight", {5120,1280}},
+            {"attn.wq_b.weight", {1280,32768}}, {"attn_norm.weight", {5120}},
+            {"ffn.gate.bias", {128}}, {"ffn.gate.weight", {5120,128}},
+            {"ffn.shared_experts.w1.weight", {5120,2304}}, {"ffn.shared_experts.w2.weight", {2304,5120}},
+            {"ffn.shared_experts.w3.weight", {5120,2304}}, {"ffn_norm.weight", {5120}},
+            {"hc_attn_base", {24}}, {"hc_attn_fn", {20480,24}}, {"hc_attn_scale", {3}},
+            {"hc_ffn_base", {24}}, {"hc_ffn_fn", {20480,24}}, {"hc_ffn_scale", {3}},
+            {"ffn.experts.w1.weight", {5120,2304,128}}, {"ffn.experts.w2.weight", {2304,5120,128}},
+            {"ffn.experts.w3.weight", {5120,2304,128}} };
+        auto shape_ok = [&](const std::string & n, const std::vector<uint64_t> & expected) {
+            auto actual = side.find(n)->shape;
+            auto wanted = expected;
+            // gguf's C++ writer drops trailing singleton dimensions (e.g. [5376,1] -> [5376]).
+            while (actual.size() > 1 && actual.back() == 1) actual.pop_back();
+            while (wanted.size() > 1 && wanted.back() == 1) wanted.pop_back();
+            if (actual != wanted) { err = "1017 DSpark shape mismatch: " + n; return false; }
+            return true;
+        };
+        for (int b = 0; b < 3; ++b)
+            for (const auto & v : common)
+                if (!shape_ok("mtp." + std::to_string(b) + "." + v.first, v.second)) return false;
+        for (const auto & v : std::vector<std::pair<std::string, std::vector<uint64_t>>>{
+                {"mtp.0.main_proj.weight", {15360,5120}}, {"mtp.0.main_norm.weight", {5120}},
+                {"mtp.2.norm.weight", {5120}}, {"mtp.2.markov_head.embed.weight", {256,129280}},
+                {"mtp.2.markov_head.head.weight", {256,129280}}, {"mtp.2.confidence_head.proj.weight", {5376,1}} })
+            if (!shape_ok(v.first, v.second)) return false;
+    }
+    return true;
+}
+}  // namespace
+
+bool ds41_validate_dspark(const Ds41DSparkConfig & cfg, std::string & err) {
+    try {
+        const auto main = GgufModel::open(cfg.main_gguf);
+        const auto side = GgufModel::open(cfg.sidecar);
+        Ds41Geometry geometry;
+        err = ds41_read_geometry(main, geometry, cfg.llama_q2_k);
+        if (!err.empty()) return false;
+        return validate_sidecar(side, cfg, err);
+    } catch (const std::exception & e) { err = e.what(); return false; }
+}
+
 bool Ds41DSpark::init(const Ds41DSparkConfig & cfg, std::string & err) {
     Impl & im = *p_;
     im.cfg = cfg;
@@ -235,11 +318,12 @@ bool Ds41DSpark::init(const Ds41DSparkConfig & cfg, std::string & err) {
         err = e.what();
         return false;
     }
-    if (!(err = ds41_read_geometry(*im.main, im.g)).empty()) return false;
+    if (!(err = ds41_read_geometry(*im.main, im.g, cfg.llama_q2_k)).empty()) return false;
     const Ds41Geometry & G = im.g;
     im.D = G.n_embd; im.HC = G.hc; im.DH = G.d_head; im.NH = G.n_head; im.OG = G.o_groups; im.OL = G.o_lora;
     im.OGD = G.n_head * G.d_head / G.o_groups; im.NFF = G.n_ff; im.V = G.vocab; im.BS = cfg.block; im.KM = cfg.max_append;
     im.NU = cfg.n_used;
+    if (!validate_sidecar(*im.side, cfg, err)) return false;
     if (!im.load(err)) return false;
     im.NE = im.BW(0, "ffn.experts.w1.weight")->ne[2];
     if (im.BW(0, "main_proj.weight")->ne[0] != 3 * im.D) { err = "mtp.0.main_proj is not [3*n_embd, n_embd]"; return false; }
@@ -421,11 +505,13 @@ bool Ds41DSpark::step(const float * mh, const int * pos, int k, int bonus, int *
     const bool draft = bonus >= 0;
     if (draft) {
         const int p = pos[k - 1];
-        // embeddings of [bonus, noise x4] (trunk token_embd, F16 rows)
+        // embeddings of [bonus, noise x4], using the same row dequantizer as the trunk.
         std::vector<float> emb((size_t) (im.D * im.BS));
         for (int64_t t = 0; t < im.BS; ++t) {
             const int id = t == 0 ? bonus : im.cfg.noise_id;
-            ggml_fp16_to_fp32_row((const ggml_fp16_t *) (im.embd + (size_t) id * (size_t) im.D * 2), emb.data() + (size_t) (t * im.D), im.D);
+            if (id < 0 || id >= im.V) { im.err = "DSpark token id out of range"; return false; }
+            ggml_get_type_traits(im.embd_type)->to_float(im.embd + (size_t) id * ggml_row_size(im.embd_type, im.D),
+                                                       emb.data() + (size_t) (t * im.D), im.D);
         }
         std::vector<int32_t> bp((size_t) im.BS);
         for (int64_t t = 0; t < im.BS; ++t) bp[(size_t) t] = p + 1 + (int) t;
