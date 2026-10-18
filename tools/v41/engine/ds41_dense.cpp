@@ -3,6 +3,7 @@
 
 #include "ds41_engram.hpp"
 #include "ds41_ops.hpp"
+#include "ds41_indexer_sidecar.hpp"
 
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
@@ -120,6 +121,7 @@ struct Ds41Dense::Impl {
     ggml_backend_t backend = nullptr;
     bool own_backend = false, cpu = true;
     WStore w;
+    WStore indexer_w;
     Ds41Engram engram;
     std::string err;
 
@@ -244,6 +246,48 @@ struct Ds41Dense::Impl {
 };
 
 // ================================================================== weights
+
+// Preserve the original Q2_K model and replace only indexer matrices/norms (or
+// indexer plus compressed-KV projections/norms for a deepseek41-retrieval sidecar),
+// using F32 dequantized from the pinned checkpoint. No expert weights are loaded here.
+static bool load_indexer_sidecar(Ds41Dense::Impl & im, std::string & err) {
+    const char * path=std::getenv("STRATA_INDEXER_SIDECAR");
+    if(!path || !*path)return true;
+    if(!im.g.llama_q2_k){err="STRATA_INDEXER_SIDECAR requires --llama-q2-k";return false;}
+    try {
+        GgufModel side=GgufModel::open(path);
+        const auto * arch=side.meta().get("general.architecture");
+        const bool combined=arch && arch->s=="deepseek41-retrieval";
+        IndexerShapes expected;
+        for(size_t s=0;s<im.model->size();++s)
+            for(const auto & ti:im.model->shard(s).tensors())
+                if(ti.name.find(".indexer.")!=std::string::npos ||
+                   (combined && ti.name.find(".attn_compressor_")!=std::string::npos))expected.emplace(ti.name,ti.shape);
+        if(!validate_indexer_sidecar(side,expected,err))return false;
+        WStore & replacement=im.indexer_w;
+        ggml_init_params ip{ggml_tensor_overhead()*(expected.size()+16),nullptr,true};
+        replacement.ctx=ggml_init(ip);
+        if(!replacement.ctx){err="cannot allocate indexer metadata";return false;}
+        size_t bytes=0;
+        for(const auto & ti:side.shard(0).tensors()) {
+            int64_t ne[GGML_MAX_DIMS]={1,1,1,1};
+            for(size_t d=0;d<ti.shape.size();++d)ne[d]=(int64_t)ti.shape[d];
+            auto * t=ggml_new_tensor(replacement.ctx,GGML_TYPE_F32,(int)ti.shape.size(),ne);
+            ggml_set_name(t,ti.name.c_str());replacement.t[ti.name]=t;bytes+=ggml_nbytes(t);
+        }
+        auto buffer=ggml_backend_alloc_ctx_tensors(replacement.ctx,im.backend);
+        if(!buffer){err="cannot allocate indexer weights on backend";return false;}
+        replacement.bufs.push_back(buffer);
+        for(const auto & ti:side.shard(0).tensors()) {
+            auto * t=replacement.t.at(ti.name);
+            ggml_backend_tensor_set(t,side.shard(0).tensor_data(ti),0,ggml_nbytes(t));
+        }
+        ggml_backend_synchronize(im.backend); // mapped source can close after every upload completes
+        for(const auto & entry:replacement.t)im.w.t[entry.first]=entry.second;
+        std::fprintf(stderr,"indexer sidecar: %zu F32 tensors, %.2f MiB (pinned 1017, opt-in)\n",replacement.t.size(),bytes/1048576.0);
+        return true;
+    } catch(const std::exception & e) {err=std::string("indexer sidecar: ")+e.what();return false;}
+}
 
 static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
     WStore & w = im.w;
@@ -382,7 +426,7 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
     const TensorInfo * te = model.find("token_embd.weight", &si);
     im.embd = model.shard(si).tensor_data(*te);
     im.embd_type = (int) te->type;
-    return true;
+    return load_indexer_sidecar(im, err);
 }
 
 // ================================================================== graph helpers
