@@ -280,13 +280,24 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "usage: see tools/v41/engine/ds41_generate.cpp\n");
         return 2;
     }
-    if (a.llama_q2_k && (!a.engram.empty() || std::getenv("STRATA_DSPARK") || std::getenv("STRATA_SERVE_DSPARK"))) {
-        std::fprintf(stderr, "--llama-q2-k uses embedded Engram; external Engram and unqualified DSpark are refused\n");
+    if (a.llama_q2_k && !a.engram.empty()) {
+        std::fprintf(stderr, "--llama-q2-k uses embedded Engram; external Engram is refused\n");
         return 2;
     }
     if (a.llama_q2_k && (!a.build_mirror.empty() || std::getenv("STRATA_BLOB_MIRROR"))) {
         std::fprintf(stderr, "blob mirrors are not qualified for --llama-q2-k\n"); return 2;
     }
+#if defined(DS41_HAVE_DSPARK)
+    if (a.llama_q2_k) {
+        const char * side = std::getenv(a.serve ? "STRATA_SERVE_DSPARK" : "STRATA_DSPARK");
+        if (side) {
+            Ds41DSparkConfig sc;
+            sc.main_gguf = a.model; sc.sidecar = side; sc.llama_q2_k = true;
+            std::string err;
+            if (!ds41_validate_dspark(sc, err)) { std::fprintf(stderr, "DSpark preflight: %s\n", err.c_str()); return 2; }
+        }
+    }
+#endif
     if (!a.build_mirror.empty()) {   // the second-drive blob mirror (STRATA_BLOB_MIRROR): coldest experts first
         std::string err;
         if (a.mirror_gib < 0) {   // --check-mirror F: open it with every blob compared against the model file
@@ -438,12 +449,15 @@ int main(int argc, char ** argv) {
                      a.prune_penalty > 0 ? ("penalised -" + std::to_string(a.prune_penalty)).c_str() : "masked out of routing", a.prune.c_str());
         mc.exclude = pruned;
     }
+    const bool defer_vram = !mc.cpu_only && (a.prefill_chunk > 1 || a.prompt_batch > 1);
+    // Native mixed-format input already opens its cache at seed time. Uniform
+    // Q2_K must also defer allocation, not just defer filling an allocated cache.
+    mc.defer_cache = a.llama_q2_k && defer_vram;
     if (!tier.init(TG, &src, mc, err)) { std::fprintf(stderr, "ds41_generate: tier init: %s\n", err.c_str()); return 1; }
     dense.set_oom_hook([&]() { return tier.release_prestage(); });   // a prompt pass that does not fit: prestage gives way
     // defer the VRAM cache: the prompt's chunk + graph buffers (~4 GiB) use that VRAM first, then the cache opens into
     // it (measured) - the old fixed --vram-margin had to cover prefill and starved decode of slots.  --serve does this
     // per request: a multi-token prompt closes the cache (release_cache), the decode after it re-seeds (~0.6 s)
-    const bool defer_vram = !mc.cpu_only && (a.prefill_chunk > 1 || a.prompt_batch > 1);
     std::vector<std::pair<int32_t, int32_t>> ranked;
     if (!mc.cpu_only) {
         if (!a.rank.empty()) {
@@ -820,6 +834,7 @@ int main(int argc, char ** argv) {
             sc.backend = be;
             sc.sidecar = dsp_path;
             sc.main_gguf = a.model;
+            sc.llama_q2_k = a.llama_q2_k;
             sc.max_append = 16;
             if (!std::getenv("STRATA_DSPARK_OWN_HEAD")) sc.shared_head = dense.weight("output.weight");   // -0.7 GB
             dsp = std::make_unique<Ds41DSpark>();

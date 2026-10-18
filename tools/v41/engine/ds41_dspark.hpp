@@ -25,6 +25,7 @@ struct Ds41DSparkConfig {
     ggml_backend_t backend = nullptr;   ///< the backend to run on (the engine's); required
     std::string sidecar;                ///< V41-MTP-Vision.gguf (mtp.0-2.*)
     std::string main_gguf;              ///< the trunk GGUF (geometry, output.weight, token_embd)
+    bool llama_q2_k = false;            ///< opt-in pinned 1017 llama.cpp trunk + matching official sidecar
     int n_used = 3;                     ///< DSpark experts per token (config dspark_n_activated_experts)
     int noise_id = 128799;              ///< config dspark_noise_token_id
     int block = 5;                      ///< config dspark_block_size
@@ -33,6 +34,9 @@ struct Ds41DSparkConfig {
     /// Any type (a requantized dense head only moves acceptance - drafts are verified).  nullptr = load from main_gguf.
     ggml_tensor * shared_head = nullptr;
 };
+
+/// CPU-only preflight: pinned source identity, complete tensors and 1017 geometry; allocates no device memory.
+bool ds41_validate_dspark(const Ds41DSparkConfig & cfg, std::string & err);
 
 class Ds41DSpark {
 public:

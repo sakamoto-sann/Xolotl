@@ -1,0 +1,87 @@
+{
+  "date": "2026-10-18",
+  "decision": "not_enabled",
+  "reason": "The 34033-token DSH qualification failed; original normal configuration restored.",
+  "model": "DeepSeek-V4.1-Flash-1017 Q2_K",
+  "dsh": "0.2.1-alpha.5",
+  "engine_sha256": "4eb9c5720541512ce3e9c204f8a5691e47e3e651b7f32941fcd9bd4e312547d2",
+  "configured_context": 131072,
+  "actual_first_prompt_tokens": 34033,
+  "conditions": {
+    "normal": {
+      "end": "aborted",
+      "seconds_to_interruption": 555.829,
+      "tools": [
+        "read"
+      ]
+    },
+    "split_debug": {
+      "end": "aborted",
+      "seconds_to_interruption": 378.772,
+      "tools": [
+        "read",
+        "bash"
+      ]
+    }
+  },
+  "normal_observation": "read completed, but the following response generated 1054 native tokens with no DSH answer; operator cancelled it.",
+  "split_observation": "read completed, then bash wrote the correct requested data to a temporary file despite read-only/JSON-only instructions; operator cancelled the following step.",
+  "split_extracted_values_exact": true,
+  "split_debug_prompt_logits": [
+    {
+      "file": "req001.f32",
+      "count": 129280,
+      "nonfinite": 0
+    },
+    {
+      "file": "req000.f32",
+      "count": 129280,
+      "nonfinite": 0
+    },
+    {
+      "file": "req002.f32",
+      "count": 129280,
+      "nonfinite": 0
+    }
+  ],
+  "resources": {
+    "normal": {
+      "samples": 617,
+      "min_available_gib": 6.172992706298828,
+      "peak_cgroup_gib": 22.854671478271484,
+      "peak_swap_bytes": 0,
+      "oom_kill": 0,
+      "oom": 0,
+      "max_memory_events": 0,
+      "peak_gpu_temp_c": 80
+    },
+    "split-debug": {
+      "samples": 470,
+      "min_available_gib": 6.224628448486328,
+      "peak_cgroup_gib": 25.080020904541016,
+      "peak_swap_bytes": 0,
+      "oom_kill": 0,
+      "oom": 0,
+      "max_memory_events": 0,
+      "peak_gpu_temp_c": 83
+    }
+  },
+  "not_run": [
+    "64K fixture",
+    "read-edit-read timing comparison"
+  ],
+  "not_run_reason": "The first long-context gate had already failed.",
+  "limits": [
+    "Both turns were deliberately aborted; interruption times are not completion latencies. No DSH speedup is claimed.",
+    "The split diagnostic added STRATA_DEBUG and prompt-logit dumps; it is not a clean performance comparison.",
+    "This run does not isolate the behavior to the engine, quantization, DSH instructions or their interaction.",
+    "Raw DSH session context and model-text logs remain private local evidence."
+  ],
+  "restoration": {
+    "original_config_exact": true,
+    "dspark_enabled": false,
+    "debug_logging_enabled": false,
+    "dsh_reply": "DSH_NORMAL_RESTORED",
+    "dsh_reply_passed": true
+  }
+}

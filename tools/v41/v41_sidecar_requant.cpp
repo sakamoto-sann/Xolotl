@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 static bool is_routed_expert(const char * name) {
     return strstr(name, ".ffn.experts.") != nullptr;
@@ -45,16 +47,18 @@ static ggml_type parse_type(const std::string & s) {
 
 int main(int argc, char ** argv) {
     std::string in, out, ts;
+    int threads = 1;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto nx = [&]() { return std::string(i + 1 < argc ? argv[++i] : ""); };
-        if (a == "--in") in = nx();
+        if (a == "--threads") threads = std::atoi(nx().c_str());
+        else if (a == "--in") in = nx();
         else if (a == "--out") out = nx();
         else if (a == "--type") ts = nx();
         else { std::fprintf(stderr, "unknown arg %s\n", a.c_str()); return 2; }
     }
-    if (in.empty() || out.empty() || ts.empty()) {
-        std::fprintf(stderr, "usage: v41_sidecar_requant --in SRC.gguf --out DST.gguf --type Q3_K\n");
+    if (in.empty() || out.empty() || ts.empty() || threads < 1 || threads > 32) {
+        std::fprintf(stderr, "usage: v41_sidecar_requant --in SRC.gguf --out DST.gguf --type Q3_K [--threads 1..32]\n");
         return 2;
     }
     const ggml_type target = parse_type(ts);
@@ -103,14 +107,26 @@ int main(int argc, char ** argv) {
 
         std::vector<uint8_t> dst(rs_dst * (size_t) nrows);
         const int64_t chunk = std::max<int64_t>(1, (16 * 1024 * 1024) / (nprow * 4));   // ~64 MB of f32 at a time
-        std::vector<float> f32((size_t) (nprow * chunk));
         const ggml_to_float_t src_to_f32 = ggml_get_type_traits(GGML_TYPE_MXFP4)->to_float;
-        for (int64_t r0 = 0; r0 < nrows; r0 += chunk) {
-            const int64_t nr = std::min(chunk, nrows - r0);
-            src_to_f32((const char *) t->data + (size_t) r0 * rs_src, f32.data(), nr * nprow);
-            const size_t wrote = ggml_quantize_chunk(target, f32.data(), dst.data() + (size_t) r0 * rs_dst, 0, nr, nprow, nullptr);
-            if (wrote != (size_t) nr * rs_dst) { std::fprintf(stderr, "%s: quantize wrote %zu != %zu\n", nm, wrote, (size_t) nr * rs_dst); return 1; }
-        }
+        ggml_quantize_init(target);
+        std::atomic<int64_t> next {0};
+        std::atomic<bool> failed {false};
+        auto worker = [&]() {
+            std::vector<float> f32((size_t) (nprow * chunk));
+            for (;;) {
+                const int64_t r0 = next.fetch_add(chunk);
+                if (r0 >= nrows) break;
+                const int64_t nr = std::min(chunk, nrows - r0);
+                src_to_f32((const char *) t->data + (size_t) r0 * rs_src, f32.data(), nr * nprow);
+                const size_t wrote = ggml_quantize_chunk(target, f32.data(), dst.data() + (size_t) r0 * rs_dst, 0, nr, nprow, nullptr);
+                if (wrote != (size_t) nr * rs_dst) failed = true;
+            }
+        };
+        std::vector<std::thread> workers;
+        for (int n = 1; n < threads; ++n) workers.emplace_back(worker);
+        worker();
+        for (auto & w : workers) w.join();
+        if (failed) { std::fprintf(stderr, "%s: short quantization output\n", nm); return 1; }
         keep.push_back(std::move(dst));
         gguf_set_tensor_type(g, nm, target);
         gguf_set_tensor_data(g, nm, keep.back().data());
