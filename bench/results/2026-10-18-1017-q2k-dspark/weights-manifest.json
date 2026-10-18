@@ -1,0 +1,71 @@
+{
+  "repo": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  "revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
+  "shards": {
+    "model-00044-of-00048.safetensors": {
+      "size": 2652728736,
+      "sha256": "3e8ac315c2bcca3e83c5e6e25c5758a75c03732063a6ff0c1b0e24b9ff49f6e6"
+    },
+    "model-00045-of-00048.safetensors": {
+      "size": 2573998176,
+      "sha256": "9c73b27c4343236790008979d5e0b565f687aa64440031b9e096fed1ab8039c5"
+    },
+    "model-00046-of-00048.safetensors": {
+      "size": 2706402896,
+      "sha256": "1dccc19a3741972c661de734572dc7d4b899e6e99bfbdf3ae4e057c707e5b339"
+    }
+  },
+  "state": "verified",
+  "sidecars": {
+    "1017-MTP-MXFP4.gguf": {
+      "bytes": 7903825792,
+      "sha256": "3d1075a4da28c3f7953312f92ebe5bc36456271c05b6e4ca9a1931e4514f3da2"
+    },
+    "1017-MTP-Q2_K.gguf": {
+      "bytes": 5143449440,
+      "sha256": "d5fc51447ff6466beb2cadd68e3e1c197fe85049807d777a1a2f778f1aa8ef38"
+    }
+  },
+  "q2_conversion": {
+    "expert_tensors": 9,
+    "nonexpert_tensors_byte_identical": 72,
+    "expert_first8_rows_samples": [
+      {
+        "tensor": "mtp.0.ffn.experts.w1.weight",
+        "relative_rms": 0.3057369589805603
+      },
+      {
+        "tensor": "mtp.0.ffn.experts.w2.weight",
+        "relative_rms": 0.30505427718162537
+      },
+      {
+        "tensor": "mtp.0.ffn.experts.w3.weight",
+        "relative_rms": 0.30134618282318115
+      },
+      {
+        "tensor": "mtp.1.ffn.experts.w1.weight",
+        "relative_rms": 0.30418604612350464
+      },
+      {
+        "tensor": "mtp.1.ffn.experts.w2.weight",
+        "relative_rms": 0.43396246433258057
+      },
+      {
+        "tensor": "mtp.1.ffn.experts.w3.weight",
+        "relative_rms": 0.3067563474178314
+      },
+      {
+        "tensor": "mtp.2.ffn.experts.w1.weight",
+        "relative_rms": 0.30209216475486755
+      },
+      {
+        "tensor": "mtp.2.ffn.experts.w2.weight",
+        "relative_rms": 0.43654555082321167
+      },
+      {
+        "tensor": "mtp.2.ffn.experts.w3.weight",
+        "relative_rms": 0.30379706621170044
+      }
+    ]
+  }
+}

@@ -58,3 +58,16 @@ Measure committed tokens per second, total completion latency, acceptance, token
 and SSD reads against a same-day run of the same binary without DSpark. A draft stack takes VRAM away from the
 trunk expert cache and can slow an SSD-bound model down. The one-shot path also re-feeds a prompt tail to seed
 the draft window; account for that in first-token latency. The persistent server has a separate prompt seed path.
+
+## Local qualification limits (2026-10-18)
+
+On the measured RTX 3090 / Ryzen 9 3900X / 32 GiB host, full draft weights and a 64-expert draft were slower than
+normal one-shot generation on the 4,060-token coding fixture. A 40-expert, confidence-0.6 persistent-server trial
+improved one cached regeneration but did not provide a consistent overall speed improvement.
+
+Fresh and first repeated coding outputs matched the normal run. After a one-token response budget, a subsequent
+DSpark regeneration produced a longer docstring and hit the same 96-token output limit with incomplete code;
+the normal run completed in 85 tokens. The cause (cache lifecycle versus quantized verifier numerics) is not
+isolated. Both modes also failed the JSON arithmetic fixture; Japanese sentence-count instruction adherence differed.
+These are experimental results, not a lossless-runtime qualification. Keep the normal inference default until the
+runtime parity and workload results are resolved. Sidecar compatibility checks alone do not establish output parity.
