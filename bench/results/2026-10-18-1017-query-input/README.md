@@ -41,6 +41,18 @@ python tools/v41/tests/make_query_input_fixtures.py \
 
 The new binary with the unchanged 24-tensor configuration reproduced the existing 85-token 4K code output byte for byte in105.449s. This is a compatibility check, not a speed improvement.
 
-Actual DSH 68K prefill with two rapid steering prompts is running sequentially for both arms. The harness permits bounded re-reads and evaluates the final JSON; one additional permitted read from a raw single-step replay is not a full-workflow failure. A passing arm must subsequently complete real long-context read/edit/read, fresh-record holdout, and a fresh 67K generation interruption. Swap, cgroup critical events and restoration are checked after each stage. No stable-default or speed claim is made before these gates complete.
+Actual DSH 68K prefill with two rapid steering prompts completed for both arms. Neither produced the required final JSON. These are full-workflow failures, not accuracy scores of zero out of three:
+
+| Profile | DSH seconds | Result | Tool calls | Prefill seconds |
+|---|---:|---|---:|---:|
+| Prior source35, native Q2 q_a | 817.462 | Final JSON, 2/3 correct | 2 permitted reads | 590.424 |
+| Source35 plus Q2-dequant F32 q_a control | 663.237 | Incorrectly asserted the JSON file was binary/unreadable | 0 | 593.250 |
+| Source35 plus original-source F32 q_a | 647.821 | Incorrectly treated actual human followups as ledger prompt injection | 0 | 592.510 |
+
+The final two failures were model assertions, not real tool failures or permission denials. Canonical system/user messages and tool schemas were identical in both new arms and the preceding source35 baseline (SHA256 `d72112c12b2fed3f3daa68e2c717a3e2e772f30724aa76cc50ffb83e16109499`). Native input length was68186 tokens. The harness permits bounded re-reads and evaluates the final JSON; one additional permitted read from a raw single-step replay is not a full-workflow failure.
+
+The control's52,428,800 values also match ggml C++ `to_float` bitwise, independently of NumPy dequantization. A328.6 MiB CPU diagnostic checked this during3.2s of the source prefill, so these are not strict speed comparisons. The failed control trajectory spent35.665s of its51.67s native generation waiting for expert-file delivery (80.149 GiB logical demand); this is a bottleneck observation, not a useful-answer speed result.
+
+Both new arms retained all human markers and had prompt-interruption advancement below1s. Peak API memory was23,800,676,352 and24,405,950,464 bytes respectively, swap0, no critical cgroup memory events. Owned-session cleanup and baseline restoration returned0. Long edit, holdout and generation-steering stages did not run after the final-answer gate failed. Neither profile was promoted. Restoring these eight q_a matrices alone did not solve the case; other main-model quantization effects are not ruled out. No stable-default or speed-improvement claim is made.
 
 Separate read-only self-review only; an independent reviewer was unavailable. HIP/SYCL were not tested. Keep draft and do not merge on this evidence.
