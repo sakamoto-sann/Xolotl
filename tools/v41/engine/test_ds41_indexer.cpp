@@ -7,11 +7,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <vector>
 using namespace strata::v41;
 int main() {
     auto backend=ggml_backend_cuda_init(0);if(!backend)return 2;
-    int failures=0;constexpr int D=128,H=64;
+    int failures=0;constexpr int D=128,H=32,K=512;
     const float grid[]={0,.5f,1,1.5f,2,3,4,6,-0.0f,-.5f,-1,-1.5f,-2,-3,-4,-6};
     for(int64_t rows : {8192LL,65537LL,131072LL})for(int queries : {1,3,16}) {
         ggml_init_params params{ggml_tensor_overhead()*128+ggml_graph_overhead(),nullptr,true};
@@ -27,8 +28,9 @@ int main() {
         auto bf16=ggml_set_rows(ctx,ggml_new_tensor_2d(ctx,GGML_TYPE_BF16,D,rows),rounded,ids);
         auto a=ggml_lightning_indexer(ctx,q,ggml_reshape_4d(ctx,bf16,D,1,rows,1),w,mask);
         auto b=ggml_lightning_indexer(ctx,q,ggml_reshape_4d(ctx,packed,D,1,rows,1),w,mask);
-        ggml_set_output(a);ggml_set_output(b);
-        auto graph=ggml_new_graph(ctx);ggml_build_forward_expand(graph,a);ggml_build_forward_expand(graph,b);
+        auto selected=ggml_cont(ctx,ggml_top_k(ctx,ggml_reshape_2d(ctx,b,rows,queries),K));
+        ggml_set_output(a);ggml_set_output(b);ggml_set_output(selected);
+        auto graph=ggml_new_graph(ctx);ggml_build_forward_expand(graph,a);ggml_build_forward_expand(graph,b);ggml_build_forward_expand(graph,selected);
         auto alloc=ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
         if(!ggml_gallocr_alloc_graph(alloc,graph))return 2;
         std::vector<float> keys((size_t)rows*D),qs((size_t)D*H*queries),weights((size_t)H*queries);
@@ -47,7 +49,9 @@ int main() {
         if(ggml_backend_graph_compute(backend,graph)!=GGML_STATUS_SUCCESS)return 2;
         std::vector<float> av((size_t)rows*queries),bv(av.size());
         ggml_backend_tensor_get(a,av.data(),0,av.size()*4);ggml_backend_tensor_get(b,bv.data(),0,bv.size()*4);
-        size_t bit_bad=0,ref_bad=0,best_bad=0;
+        std::vector<int32_t> picked((size_t)K*queries);
+        ggml_backend_tensor_get(selected,picked.data(),0,picked.size()*sizeof(int32_t));
+        size_t bit_bad=0,ref_bad=0,best_bad=0,topk_bad=0;
         for(size_t i=0;i<av.size();++i)bit_bad+=std::memcmp(&av[i],&bv[i],4)!=0;
         std::vector<int64_t> sample{0,1,31,32,32767,32768,65535,65536,rows-2,rows-1};
         std::sort(sample.begin(),sample.end());sample.erase(std::unique(sample.begin(),sample.end()),sample.end());
@@ -62,8 +66,22 @@ int main() {
                 else ref_bad+=!std::isfinite(actual)||std::abs((double)actual-ref)>1e-4+std::abs(ref)*1e-5;
             }
         }
-        std::printf("indexer rows=%lld queries=%d: packed_vs_bf16_bit_bad=%zu sampled_f64_bad=%zu known_best_bad=%zu\n",(long long)rows,queries,bit_bad,ref_bad,best_bad);
-        failures+=bit_bad||ref_bad||best_bad;
+        for(int t=0;t<queries;++t) {
+            std::vector<float> scores(bv.begin()+(size_t)t*rows,bv.begin()+(size_t)(t+1)*rows);
+            std::nth_element(scores.begin(),scores.begin()+K-1,scores.end(),std::greater<float>());
+            const float threshold=scores[K-1];
+            std::vector<unsigned char> seen((size_t)rows,0);
+            bool found_best=false;
+            for(int k=0;k<K;++k) {
+                const int32_t row=picked[(size_t)t*K+k];
+                if(row<0||row>=rows){++topk_bad;continue;}
+                topk_bad+=seen[(size_t)row]++!=0 || bv[(size_t)t*rows+row]<threshold;
+                found_best|=row==rows-2;
+            }
+            topk_bad+=!found_best;
+        }
+        std::printf("indexer rows=%lld heads=%d queries=%d: packed_vs_bf16_bit_bad=%zu sampled_f64_bad=%zu known_best_bad=%zu topk_bad=%zu\n",(long long)rows,H,queries,bit_bad,ref_bad,best_bad,topk_bad);
+        failures+=bit_bad||ref_bad||best_bad||topk_bad;
         ggml_gallocr_free(alloc);ggml_free(ctx);
     }
     ggml_backend_free(backend);return failures?1:0;
