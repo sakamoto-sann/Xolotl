@@ -913,9 +913,23 @@ int main(int argc, char ** argv) {
         ggml_backend_dev_memory(ggml_backend_get_device(be), &tf, &tt);
         std::fprintf(stderr, "vram trace: %s %d free %.2f GiB\n", where, a, tf / 1073741824.0);
     };
+    // The serve stdin reader can receive STOP while a long layer-major prompt is
+    // running. Poll only between completed graph/tier operations; one-shot has no
+    // callback and keeps the existing path.
+    std::function<bool()> prefill_stop;
+    bool prefill_cancelled = false;
+    auto stop_prefill = [&]() -> bool {
+        if (prefill_cancelled || (prefill_stop && prefill_stop())) {
+            prefill_cancelled = true;
+            ferr = "cancelled";
+            return true;
+        }
+        return false;
+    };
     auto feed = [&](const int * ids, int n, int pos0, const std::function<void(int)> & progress,
                     std::vector<float> * all_logits) -> bool {
         for (int c0 = 0; c0 < n; ) {
+            if (stop_prefill()) return false;
             if (PB > 1 && n - c0 >= 2) {
                 // ---- layer-major: up to B tokens of every layer, the experts run once per layer over the whole batch
                 int B = std::min(pb_cap, n - c0);
@@ -958,6 +972,7 @@ int main(int argc, char ** argv) {
                 }
                 double t0 = now_ms();
                 for (int l = 0; l < n_layer; ++l) {
+                    if (stop_prefill()) return false;
                     if (l < 4) vram_log("batch layer", l);
                     // layer 20 is the last kv source: for phase A only its persistent KV writes run; layers 21-39 run
                     // nothing at all for phase A (their output columns are never read, and no later layer reads state
@@ -1037,6 +1052,7 @@ int main(int argc, char ** argv) {
                 double t0 = now_ms();
                 if (!dense.begin(ids + c0, m, pos0 + c0)) { ferr = dense.last_error(); return false; }
                 for (int l = 0; l < n_layer; ++l) {
+                    if (stop_prefill()) return false;
                     const float * fn = nullptr;
                     if (!dense.attn_router(l, cids.data(), cw.data(), &fn)) { ferr = dense.last_error(); return false; }
                     if (dump_dir) {
@@ -1115,6 +1131,7 @@ int main(int argc, char ** argv) {
                 if (*it == "STOP") { q.erase(it); return true; }
             return false;
         };
+        prefill_stop = stop_pending;
         auto is_stop = [&](int t) { return std::find(a.stop.begin(), a.stop.end(), t) != a.stop.end() || t == (int) G.eos; };
         const int ctxv = (int) ctx;
         std::vector<int> hist;
@@ -1362,9 +1379,11 @@ int main(int argc, char ** argv) {
                 std::printf("PP %d %d %.0f %.1f\n", reused + done, total, ms, 1000.0 * done / std::max(ms, 1e-9));
                 std::fflush(stdout);
             };
+            prefill_cancelled = false;
             auto feed_steps = [&]() -> bool {   // the short-turn path: passes of up to pass_max tokens (a lone token: a step)
                 int last_rows = 1;
                 for (int i = 0; i < dh; ) {
+                    if (stop_prefill()) return false;
                     const int m = std::min(pass_max, dh - i);
                     if (!(m == 1 ? step(ids[(size_t) (reused + i)], reused + i) : pass_m(ids.data() + reused + i, m, reused + i))) return false;
                     if (!capture_tail(delta, i, m, 0)) return false;   // this pass's rows, before the next pass replaces them
@@ -1445,6 +1464,7 @@ int main(int argc, char ** argv) {
                 if (bcap > 0) {   // the seed rows came off the batch (bcap_vh, its last bcap_got tokens): DSpark steps only
                     const int c0s = total - bcap_got;
                     for (int i0 = c0s; ok && i0 < total; i0 += 16) {
+                        if (stop_prefill()) { ok = false; break; }
                         const int m = std::min(16, total - i0);
                         spos.resize((size_t) m);
                         for (int t = 0; t < m; ++t) spos[(size_t) t] = i0 + t;
@@ -1463,6 +1483,7 @@ int main(int argc, char ** argv) {
                     if (bcap_got < 1) { ferr = "DSpark batch seed captured nothing"; ok = false; }
                 }
                 for (int i0 = total - sp_tail; ok && bcap == 0 && i0 < total; i0 += 16) {
+                        if (stop_prefill()) { ok = false; break; }
                     const int m = std::min(16, total - i0);
                     if (!pass_v(ids.data() + i0, m, i0)) { ok = false; break; }
                     spos.resize((size_t) m);
@@ -1521,7 +1542,19 @@ int main(int argc, char ** argv) {
             }
             tail_keep = 0;
             if (!ok) {
-                std::printf("ERR prefill failed: %s\n", ferr.c_str());
+                if (prefill_cancelled) {
+                    // No partial prompt can be reused as a valid conversation.
+                    snap_seed_n = cur_seed_n = 0;
+                    // feed returned before its ordinary elastic-column/chunk cleanup.
+                    dense.release_pass();
+                    const bool cleaned = !dc.elastic_cols || dense.set_columns(0);
+                    if (rdev1) rdev1 = dense.routed_dev();
+                    tier.release_chunk();
+                    tier.rebalance_tick(true);
+                    if (cleaned) std::printf("DONE 0 %d %.1f 0.0 cancel 0 0 %d 0 0 0 0 0 0\n",
+                                             total, now_ms() - tp0, reused);
+                    else std::printf("ERR cancelled prefill cleanup: %s\n", dense.last_error().c_str());
+                } else std::printf("ERR prefill failed: %s\n", ferr.c_str());
                 std::fflush(stdout);
                 hist.clear();
                 snap_len = -1;
