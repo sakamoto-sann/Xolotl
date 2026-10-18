@@ -13,12 +13,13 @@ inline bool validate_indexer_sidecar(const strata::GgufModel & side, const Index
                                      std::string & error) {
     auto reject=[&](const std::string & message){error="indexer sidecar: "+message;return false;};
     auto meta=[&](const char * name,const char * value){const auto * v=side.meta().get(name);return v&&v->s==value;};
-    const bool combined=meta("general.architecture","deepseek41-retrieval");
+    const bool query_input=meta("general.architecture","deepseek41-retrieval-qinput");
+    const bool combined=query_input || meta("general.architecture","deepseek41-retrieval");
     if(side.size()!=1 || (!combined && !meta("general.architecture","deepseek41-indexer")) ||
        !meta("deepseek41.indexer.source_repo","deepseek-ai/DeepSeek-V4.1-Flash-1017") ||
        !meta("deepseek41.indexer.source_revision","1bae0e1088993b9b82de08f59de5be5a34e42170"))
         return reject("unsupported source or architecture");
-    if(expected.size()!=(combined?35u:24u) || side.shard(0).tensors().size()!=expected.size())
+    if(expected.size()!=(query_input?43u:combined?35u:24u) || side.shard(0).tensors().size()!=expected.size())
         return reject("unexpected retrieval tensor count");
     std::set<std::string> seen;
     for(const auto & t:side.shard(0).tensors()) {

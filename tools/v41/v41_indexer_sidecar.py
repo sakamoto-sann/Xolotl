@@ -7,7 +7,9 @@ parser.add_argument("--checkpoint-root",required=True,help="Directory with pinne
 parser.add_argument("--cache-dir",required=True,help="Dedicated directory for downloaded indexer ranges")
 parser.add_argument("--out",required=True,help="New GGUF output; existing files are retained")
 parser.add_argument("--include-compressor",action="store_true",help="Experimental: also restore the 11 compressed-KV projection/norm tensors")
+parser.add_argument("--include-query-input",action="store_true",help="Also restore the 8 shared q_a projections that feed indexer queries; requires --include-compressor")
 args=parser.parse_args()
+if args.include_query_input and not args.include_compressor:raise ValueError("--include-query-input requires --include-compressor")
 srcroot=Path(args.checkpoint_root);out=Path(args.cache_dir);dest=Path(args.out)
 if dest.exists() or Path(str(dest)+".tmp").exists():raise ValueError("output or staged output exists; retained")
 out.mkdir(parents=True,exist_ok=True)
@@ -18,8 +20,10 @@ from v41_checkpoint import Checkpoint
 from v41_gguf import Source
 import gguf
 cp=Checkpoint(srcroot);wm=json.loads((srcroot/"model.safetensors.index.json").read_text())["weight_map"]
-names=sorted(k for k in wm if ".attn.indexer." in k or (args.include_compressor and ".attn.compressor." in k))
-if len(names)!=(43 if args.include_compressor else 32) or any("/" in n or "\\" in n for n in names):raise ValueError("unsupported indexer tensor set")
+query_layers={2,8,14,20,24,28,32,36}
+query_names={f"layers.{l}.attn.wq_a.{suffix}" for l in query_layers for suffix in ["weight","scale"]}
+names=sorted(k for k in wm if ".attn.indexer." in k or (args.include_compressor and ".attn.compressor." in k) or (args.include_query_input and k in query_names))
+if len(names)!=(59 if args.include_query_input else 43 if args.include_compressor else 32) or any("/" in n or "\\" in n for n in names):raise ValueError("unsupported indexer tensor set")
 manifest={"repo":cp.repo,"revision":cp.revision,"verification":"HTTPS byte ranges from pinned revision; individual tensor hashes, not full-shard verification","tensors":{}}
 old_manifest={}
 if (out/"range-manifest.json").exists():
@@ -80,7 +84,7 @@ class LocalRange(Source):
   return data[start:start+n]
 source=LocalRange()
 
-writer=gguf.GGUFWriter(str(dest)+".tmp","deepseek41-retrieval" if args.include_compressor else "deepseek41-indexer")
+writer=gguf.GGUFWriter(str(dest)+".tmp","deepseek41-retrieval-qinput" if args.include_query_input else "deepseek41-retrieval" if args.include_compressor else "deepseek41-indexer")
 writer.add_string("deepseek41.indexer.source_repo",cp.repo);writer.add_string("deepseek41.indexer.source_revision",cp.revision)
 writer.add_string("deepseek41.indexer.source_manifest_sha256",hashlib.sha256((out/"range-manifest.json").read_bytes()).hexdigest())
 converted=[]
@@ -90,12 +94,14 @@ for name in names:
  target={"wq_b":"attn_q_b","weights_proj":"proj","wk":"attn_k","k_norm":"k_norm"}.get(role,role)
  array=np.ascontiguousarray(source.f32(name),np.float32);assert np.isfinite(array).all()
  output=f"blk.{layer}.indexer.{target}.weight"
- if ".attn.compressor." in name:
+ if ".attn.wq_a." in name:
+  output=f"blk.{layer}.attn_q_a.weight"
+ elif ".attn.compressor." in name:
   target={"wkv":"kv","wgate":"gate","norm":"norm"}[role]
   output=f"blk.{layer}.attn_compressor_{target}.weight"
  writer.add_tensor(output,array)
  converted.append({"source":name,"name":output,"shape":list(array.shape),"bytes":array.nbytes,"sha256":hashlib.sha256(array.tobytes()).hexdigest()})
-if len(converted)!=(35 if args.include_compressor else 24):raise ValueError("unexpected output tensor count")
+if len(converted)!=(43 if args.include_query_input else 35 if args.include_compressor else 24):raise ValueError("unexpected output tensor count")
 writer.write_header_to_file();writer.write_kv_data_to_file();writer.write_tensors_to_file();writer.close();Path(str(dest)+".tmp").rename(dest)
 manifest["sidecar"]={"path":str(dest),"bytes":dest.stat().st_size,"sha256":hashlib.sha256(dest.read_bytes()).hexdigest(),"tensors":converted}
 (out/"sidecar-manifest.json").write_text(json.dumps(manifest,indent=2))
