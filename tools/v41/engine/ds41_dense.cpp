@@ -4,6 +4,7 @@
 #include "ds41_engram.hpp"
 #include "ds41_ops.hpp"
 #include "ds41_indexer_sidecar.hpp"
+#include "ds41_embedding_sidecar.hpp"
 
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
@@ -203,6 +204,7 @@ struct Ds41Dense::Impl {
     std::vector<std::array<int64_t, 3>> span_cap;   // [sub-batch][ratio] pass_cap
     std::vector<float> host_fn, host_wts, host_logits, host_emb;
     std::vector<int32_t> host_ids;
+    std::unique_ptr<GgufModel> embedding_sidecar; // keeps optional host rows mapped for every upload_inputs call
     int embd_type = GGML_TYPE_F16;
     const uint8_t * embd = nullptr;       // token_embd F16 rows on the mmap
     std::vector<std::vector<float>> eng_rows;
@@ -287,6 +289,24 @@ static bool load_indexer_sidecar(Ds41Dense::Impl & im, std::string & err) {
         std::fprintf(stderr,"indexer sidecar: %zu F32 tensors, %.2f MiB (pinned 1017, opt-in)\n",replacement.t.size(),bytes/1048576.0);
         return true;
     } catch(const std::exception & e) {err=std::string("indexer sidecar: ")+e.what();return false;}
+}
+
+// Same-model BF16 embedding rows stay host-mapped; upload_inputs dequantizes only requested rows.
+static bool load_embedding_sidecar(Ds41Dense::Impl & im, std::string & err) {
+    const char * path=std::getenv("STRATA_EMBEDDING_SIDECAR");
+    if(!path || !*path)return true;
+    if(!im.g.llama_q2_k){err="STRATA_EMBEDDING_SIDECAR requires --llama-q2-k";return false;}
+    try {
+        auto side=std::make_unique<GgufModel>(GgufModel::open(path));
+        const std::vector<uint64_t> expected{(uint64_t)im.g.n_embd,(uint64_t)im.g.vocab};
+        if(!validate_embedding_sidecar(*side,expected,err))return false;
+        im.embedding_sidecar=std::move(side);
+        const auto & t=im.embedding_sidecar->shard(0).tensors().front();
+        im.embd=im.embedding_sidecar->shard(0).tensor_data(t);
+        im.embd_type=(int)t.type;
+        std::fprintf(stderr,"embedding sidecar: pinned 1017 BF16 rows, host-mapped, no whole-table GPU allocation\n");
+        return true;
+    } catch(const std::exception & e){err=std::string("embedding sidecar: ")+e.what();return false;}
 }
 
 static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
@@ -426,6 +446,7 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
     const TensorInfo * te = model.find("token_embd.weight", &si);
     im.embd = model.shard(si).tensor_data(*te);
     im.embd_type = (int) te->type;
+    if(!load_embedding_sidecar(im,err))return false;
     return load_indexer_sidecar(im, err);
 }
 
