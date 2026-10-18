@@ -250,8 +250,9 @@ struct Ds41Dense::Impl {
 // ================================================================== weights
 
 // Preserve the original Q2_K model and replace only indexer matrices/norms (or
-// indexer plus compressed-KV projections/norms for a deepseek41-retrieval sidecar),
-// using F32 dequantized from the pinned checkpoint. No expert weights are loaded here.
+// indexer plus compressed-KV projections/norms for a deepseek41-retrieval sidecar,
+// plus eight shared q_a inputs for deepseek41-retrieval-qinput). No expert weights
+// are loaded here. Preparation tools verify provenance; loader labels alone do not.
 static bool load_indexer_sidecar(Ds41Dense::Impl & im, std::string & err) {
     const char * path=std::getenv("STRATA_INDEXER_SIDECAR");
     if(!path || !*path)return true;
@@ -259,12 +260,15 @@ static bool load_indexer_sidecar(Ds41Dense::Impl & im, std::string & err) {
     try {
         GgufModel side=GgufModel::open(path);
         const auto * arch=side.meta().get("general.architecture");
-        const bool combined=arch && arch->s=="deepseek41-retrieval";
+        const bool query_input=arch && arch->s=="deepseek41-retrieval-qinput";
+        const bool combined=query_input || (arch && arch->s=="deepseek41-retrieval");
+        const std::set<std::string> query_inputs={"blk.2.attn_q_a.weight","blk.8.attn_q_a.weight","blk.14.attn_q_a.weight","blk.20.attn_q_a.weight","blk.24.attn_q_a.weight","blk.28.attn_q_a.weight","blk.32.attn_q_a.weight","blk.36.attn_q_a.weight"};
         IndexerShapes expected;
         for(size_t s=0;s<im.model->size();++s)
             for(const auto & ti:im.model->shard(s).tensors())
                 if(ti.name.find(".indexer.")!=std::string::npos ||
-                   (combined && ti.name.find(".attn_compressor_")!=std::string::npos))expected.emplace(ti.name,ti.shape);
+                   (combined && ti.name.find(".attn_compressor_")!=std::string::npos) ||
+                   (query_input && query_inputs.count(ti.name)))expected.emplace(ti.name,ti.shape);
         if(!validate_indexer_sidecar(side,expected,err))return false;
         WStore & replacement=im.indexer_w;
         ggml_init_params ip{ggml_tensor_overhead()*(expected.size()+16),nullptr,true};
